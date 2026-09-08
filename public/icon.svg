@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Sunburst Gradient -->
+    <radialGradient id="bgGrad" cx="50%" cy="50%" r="70%" fx="50%" fy="30%">
+      <stop offset="0%" stop-color="#ff9900" />
+      <stop offset="60%" stop-color="#ff3300" />
+      <stop offset="100%" stop-color="#b30000" />
+    </radialGradient>
+    <linearGradient id="yellowText" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffee55" />
+      <stop offset="50%" stop-color="#ffaa00" />
+      <stop offset="100%" stop-color="#cc6600" />
+    </linearGradient>
+    <linearGradient id="whiteText" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#e2e8f0" />
+    </linearGradient>
+    <linearGradient id="greenRibbon" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#16a34a" />
+      <stop offset="100%" stop-color="#14532d" />
+    </linearGradient>
+    <linearGradient id="tagGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffdd00" />
+      <stop offset="100%" stop-color="#ff8800" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+  </defs>
+
+  <!-- App Icon Base Background -->
+  <rect width="512" height="512" rx="116" ry="116" fill="url(#bgGrad)" />
+
+  <!-- Sunburst Rays -->
+  <g opacity="0.18">
+    <polygon points="256,256 0,0 60,0" fill="#fff" />
+    <polygon points="256,256 120,0 180,0" fill="#fff" />
+    <polygon points="256,256 240,0 300,0" fill="#fff" />
+    <polygon points="256,256 360,0 420,0" fill="#fff" />
+    <polygon points="256,256 480,0 512,30" fill="#fff" />
+    <polygon points="256,256 512,90 512,150" fill="#fff" />
+    <polygon points="256,256 512,210 512,270" fill="#fff" />
+    <polygon points="256,256 512,330 512,390" fill="#fff" />
+    <polygon points="256,256 512,450 480,512" fill="#fff" />
+    <polygon points="256,256 420,512 360,512" fill="#fff" />
+    <polygon points="256,256 300,512 240,512" fill="#fff" />
+    <polygon points="256,256 180,512 120,512" fill="#fff" />
+    <polygon points="256,256 60,512 0,512" fill="#fff" />
+    <polygon points="256,256 0,450 0,390" fill="#fff" />
+    <polygon points="256,256 0,330 0,270" fill="#fff" />
+    <polygon points="256,256 0,210 0,150" fill="#fff" />
+  </g>
+
+  <!-- OFERTA! Badge Top Right -->
+  <g transform="translate(320, 90)" filter="url(#shadow)">
+    <polygon points="0,-45 14,-15 42,-28 28,-2 58,10 30,22 45,50 15,40 -2,65 -15,38 -45,52 -32,22 -62,8 -32,-5 -48,-32 -18,-18" fill="#ffdd00" stroke="#b30000" stroke-width="4" />
+    <text x="-2" y="10" font-family="Arial Black, sans-serif" font-weight="900" font-size="22" fill="#ffffff" stroke="#990000" stroke-width="3" text-anchor="middle">OFERTA!</text>
+    <text x="-2" y="10" font-family="Arial Black, sans-serif" font-weight="900" font-size="22" fill="#ffffff" text-anchor="middle">OFERTA!</text>
+  </g>
+
+  <!-- Discount Yellow Tag Left -->
+  <g transform="translate(130, 140) rotate(-22)" filter="url(#shadow)">
+    <path d="M-50,-20 L0,-60 L50,-20 L50,60 L-50,60 Z" fill="url(#tagGrad)" rx="12" stroke="#ffffff" stroke-width="4" />
+    <circle cx="0" cy="-35" r="10" fill="#b30000" />
+    <text x="0" y="30" font-family="Arial Black, sans-serif" font-weight="900" font-size="48" fill="#cc0000" text-anchor="middle">%</text>
+  </g>
+
+  <!-- Groceries & Shopping Cart -->
+  <g transform="translate(256, 230)" filter="url(#shadow)">
+    <!-- Groceries inside cart -->
+    <!-- Bread -->
+    <ellipse cx="-40" cy="-25" rx="30" ry="45" fill="#d97706" transform="rotate(-15 -40 -25)" />
+    <!-- Cheese -->
+    <polygon points="-75,10 -30,-40 -10,10" fill="#fbbf24" stroke="#d97706" stroke-width="3" />
+    <circle cx="-45" cy="-10" r="5" fill="#d97706" />
+    <circle cx="-35" cy="0" r="4" fill="#d97706" />
+    <!-- Tomato -->
+    <circle cx="0" cy="-5" r="32" fill="#ef4444" />
+    <path d="M-10,-32 Q0,-42 10,-32 Z" fill="#15803d" />
+    <!-- Bottle -->
+    <rect x="50" y="-60" width="24" height="70" rx="6" fill="#15803d" />
+    <rect x="54" y="-75" width="16" height="18" fill="#166534" />
+    <!-- Milk Box -->
+    <polygon points="20,-35 60,-35 70,10 10,10" fill="#f8fafc" stroke="#e2e8f0" stroke-width="2" />
+    <circle cx="40" cy="-15" r="8" fill="#f97316" />
+
+    <!-- Cart Basket Metal Grid -->
+    <path d="M-110,-20 L-90,60 L90,60 L110,-20 Z" fill="none" stroke="#cbd5e1" stroke-width="8" stroke-linejoin="round" />
+    <!-- Cart Handle -->
+    <path d="M-130,-40 L-110,-20" stroke="#ef4444" stroke-width="12" stroke-linecap="round" />
+    <!-- Cart Horizontal & Vertical Bars -->
+    <line x1="-100" y1="10" x2="100" y2="10" stroke="#94a3b8" stroke-width="5" />
+    <line x1="-95" y1="35" x2="95" y2="35" stroke="#94a3b8" stroke-width="5" />
+    <line x1="-60" y1="-15" x2="-50" y2="58" stroke="#94a3b8" stroke-width="5" />
+    <line x1="-20" y1="-18" x2="-16" y2="59" stroke="#94a3b8" stroke-width="5" />
+    <line x1="20" y1="-18" x2="16" y2="59" stroke="#94a3b8" stroke-width="5" />
+    <line x1="60" y1="-15" x2="50" y2="58" stroke="#94a3b8" stroke-width="5" />
+    <!-- Top red rim -->
+    <path d="M-112,-20 L112,-20" stroke="#ef4444" stroke-width="10" stroke-linecap="round" />
+    <!-- Wheels -->
+    <circle cx="-65" cy="82" r="14" fill="#334155" stroke="#94a3b8" stroke-width="4" />
+    <circle cx="65" cy="82" r="14" fill="#334155" stroke="#94a3b8" stroke-width="4" />
+  </g>
+
+  <!-- PromoMarket Logo Text & Green Ribbon -->
+  <g transform="translate(256, 385)" filter="url(#shadow)">
+    <!-- Promo text -->
+    <text x="-95" y="0" font-family="Arial Black, sans-serif" font-weight="900" font-size="52" fill="url(#yellowText)" stroke="#7c2d12" stroke-width="8" text-anchor="middle">Promo</text>
+    <text x="-95" y="0" font-family="Arial Black, sans-serif" font-weight="900" font-size="52" fill="url(#yellowText)" text-anchor="middle">Promo</text>
+    <!-- Market text -->
+    <text x="80" y="0" font-family="Arial Black, sans-serif" font-weight="900" font-size="52" fill="url(#whiteText)" stroke="#1e293b" stroke-width="8" text-anchor="middle">Market</text>
+    <text x="80" y="0" font-family="Arial Black, sans-serif" font-weight="900" font-size="52" fill="url(#whiteText)" text-anchor="middle">Market</text>
+
+    <!-- Green Banner Ribbon -->
+    <path d="M-210,30 L210,30 L195,75 L-195,75 Z" fill="url(#greenRibbon)" stroke="#14532d" stroke-width="4" />
+    <!-- Ribbon ends -->
+    <polygon points="-210,30 -230,52 -210,75 -195,75 -195,30" fill="#14532d" />
+    <polygon points="210,30 230,52 210,75 195,75 195,30" fill="#14532d" />
+    <!-- Subtitle text -->
+    <text x="0" y="61" font-family="Arial, sans-serif" font-weight="800" font-size="21" fill="#ffffff" text-anchor="middle" letter-spacing="0.5">Promoções de Supermercado</text>
+  </g>
+</svg>

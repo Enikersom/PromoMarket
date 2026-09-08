@@ -1,0 +1,6 @@
+{
+  "name": "PromoMarket - Promoções de Supermercado",
+  "description": "Sistema de promoções de supermercado em tempo real com Painel do Gestor e Aplicativo do Cliente sincronizados.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

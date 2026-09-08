@@ -1,0 +1,125 @@
+{
+  "entities": {
+    "promotions": {
+      "title": "Promotions",
+      "description": "Supermarket promotional products and flyer items",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "category": { "type": "string" },
+        "originalPrice": { "type": "number" },
+        "promoPrice": { "type": "number" },
+        "unit": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "isBanner": { "type": "boolean" },
+        "isFlashDeal": { "type": "boolean" },
+        "validUntil": { "type": "string" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["title", "category", "promoPrice", "unit", "imageUrl"]
+    },
+    "orders": {
+      "title": "Orders",
+      "description": "Customer grocery orders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerPhone": { "type": "string" },
+        "address": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["customerName", "items", "totalAmount", "status"]
+    },
+    "users": {
+      "title": "Users",
+      "description": "Users of the platform (customers and supermarket admins)",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "nome": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["cliente", "supermercado"] },
+        "documento": { "type": "string" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "cep": { "type": "string" },
+        "cadastroCompleto": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "nome", "email", "role"]
+    },
+    "clientes": {
+      "title": "Clientes",
+      "description": "Customer registration details",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "cpf": { "type": "string" },
+        "phone": { "type": "string" },
+        "cep": { "type": "string" },
+        "address": { "type": "string" }
+      },
+      "required": ["uid", "cpf", "phone"]
+    },
+    "supermercados": {
+      "title": "Supermercados",
+      "description": "Supermarket registration details",
+      "type": "object",
+      "properties": {
+        "supermercadoId": { "type": "string" },
+        "razaoSocial": { "type": "string" },
+        "nomeFantasia": { "type": "string" },
+        "cnpj": { "type": "string" },
+        "inscricaoEstadual": { "type": "string" },
+        "inscricaoMunicipal": { "type": "string" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "bairro": { "type": "string" },
+        "cidade": { "type": "string" },
+        "estado": { "type": "string" },
+        "cep": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "aceitaCompraOnline": { "type": "boolean" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["supermercadoId", "razaoSocial", "nomeFantasia", "cnpj"]
+    },
+    "encartes": {
+      "title": "Encartes",
+      "description": "Supermarket promotional flyers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "coverImage": { "type": "string" },
+        "active": { "type": "boolean" },
+        "pagesCount": { "type": "number" },
+        "supermarketId": { "type": "string" }
+      },
+      "required": ["id", "title"]
+    },
+    "produtos": {
+      "title": "Produtos",
+      "description": "Products or offers uploaded by supermarkets",
+      "type": "object",
+      "properties": {
+        "supermercadoId": { "type": "string" },
+        "nomeLoja": { "type": "string" },
+        "nome": { "type": "string" },
+        "preco": { "type": "string" },
+        "criadoEm": { "type": "string" }
+      },
+      "required": ["supermercadoId", "nome", "preco"]
+    }
+  }
+}
