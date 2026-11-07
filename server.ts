@@ -1,10 +1,13 @@
 import express, { Request, Response } from "express";
 import path from "path";
+import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { initializeApp, getApps, getApp } from "firebase/app";
 import {
   getFirestore,
+  initializeFirestore,
+  setLogLevel,
   collection,
   getDocs,
   getDoc,
@@ -26,20 +29,91 @@ const PORT = 3000;
 app.use(express.json());
 app.use(express.static(path.join(process.cwd(), "public")));
 
-// Initialize Firebase App & Firestore Database
+// Configure Firestore log level to silent to suppress benign idle gRPC stream disconnects
+try {
+  setLogLevel('silent');
+} catch (_) {}
+
+// Initialize Firebase App & Firestore Database with robust long-polling auto-detect
 const firebaseApp = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId || "(default)");
+const db = initializeFirestore(firebaseApp, {
+  experimentalAutoDetectLongPolling: true
+}, firebaseConfig.firestoreDatabaseId || "(default)");
 
 const PROMOTIONS_COLLECTION = "promotions";
 const ORDERS_COLLECTION = "orders";
 const USERS_COLLECTION = "users";
 const ENCARTES_COLLECTION = "encartes";
 
-// In-memory data store for live real-time sync
-let promotionsStore: PromotionItem[] = [];
-let encartesStore: Encarte[] = [];
+// Read exported backup from old Firestore if available
+let oldExportedBackup: any = null;
+try {
+  const backupPath = path.join(process.cwd(), "exported_old_data.json");
+  if (fs.existsSync(backupPath)) {
+    const raw = fs.readFileSync(backupPath, "utf8");
+    oldExportedBackup = JSON.parse(raw);
+    console.log(`[Backup] Dados do banco antigo carregados com sucesso: ${oldExportedBackup?.supermercados?.length || 0} supermercados, ${oldExportedBackup?.promotions?.length || 0} promoções, ${oldExportedBackup?.encartes?.length || 0} encartes.`);
+  }
+} catch (e) {
+  console.warn("Aviso ao ler exported_old_data.json:", e);
+}
+
+// In-memory data store for live real-time sync (seeded with backup if available)
+let promotionsStore: PromotionItem[] = Array.isArray(oldExportedBackup?.promotions) && oldExportedBackup.promotions.length > 0
+  ? [...oldExportedBackup.promotions]
+  : [];
+let encartesStore: Encarte[] = Array.isArray(oldExportedBackup?.encartes) && oldExportedBackup.encartes.length > 0
+  ? [...oldExportedBackup.encartes]
+  : [];
 let ordersStore: Order[] = [];
 let adminPasswordStore = "admin123";
+
+// Helper function to restore backup directly to Firestore
+async function restoreOldBackupToFirestore() {
+  if (!oldExportedBackup) return { success: false, message: "Arquivo de backup não encontrado." };
+  const counts = { supermarkets: 0, promotions: 0, encartes: 0, users: 0 };
+  try {
+    if (Array.isArray(oldExportedBackup.supermercados)) {
+      for (const item of oldExportedBackup.supermercados) {
+        const docId = item.id || item.supermercadoId || item.uid;
+        if (docId) {
+          await setDoc(doc(db, "supermercados", docId), item, { merge: true });
+          counts.supermarkets++;
+        }
+      }
+    }
+    if (Array.isArray(oldExportedBackup.promotions)) {
+      for (const item of oldExportedBackup.promotions) {
+        if (item.id) {
+          await setDoc(doc(db, PROMOTIONS_COLLECTION, item.id), item, { merge: true });
+          counts.promotions++;
+        }
+      }
+    }
+    if (Array.isArray(oldExportedBackup.encartes)) {
+      for (const item of oldExportedBackup.encartes) {
+        if (item.id) {
+          await setDoc(doc(db, ENCARTES_COLLECTION, item.id), item, { merge: true });
+          counts.encartes++;
+        }
+      }
+    }
+    if (Array.isArray(oldExportedBackup.users)) {
+      for (const item of oldExportedBackup.users) {
+        const docId = item.id || item.uid;
+        if (docId) {
+          await setDoc(doc(db, USERS_COLLECTION, docId), item, { merge: true });
+          counts.users++;
+        }
+      }
+    }
+    console.log("[Backup] Migração para o novo Firestore concluída com sucesso:", counts);
+    return { success: true, counts };
+  } catch (err: any) {
+    console.warn("[Backup] Aviso ao migrar para o novo Firestore (verifique as regras de segurança no Console do Firebase):", err?.message || err);
+    return { success: false, error: err?.message || err, counts };
+  }
+}
 
 // Initialize Firestore data on startup
 async function initFirestoreData() {
@@ -87,37 +161,39 @@ async function initFirestoreData() {
         encartesStore = encartesStore.map(enc => ({
           ...enc,
           items: enc.supermarketId
-            ? items.filter(p => p.supermarketId === enc.supermarketId)
-            : items,
-          pagesCount: Math.ceil(Math.max(1, (enc.supermarketId
-            ? items.filter(p => p.supermarketId === enc.supermarketId)
-            : items).length) / 4)
-        }));
-      }
-    });
-
-    onSnapshot(collection(db, ENCARTES_COLLECTION), (snap) => {
-      if (!snap.empty) {
-        const encs = snap.docs.map(d => d.data() as Encarte);
-        encartesStore = encs.map(enc => ({
-          ...enc,
-          items: enc.supermarketId 
             ? promotionsStore.filter(p => p.supermarketId === enc.supermarketId)
             : promotionsStore,
-          pagesCount: Math.ceil(Math.max(1, (enc.supermarketId 
+          pagesCount: Math.ceil(Math.max(1, (enc.supermarketId
             ? promotionsStore.filter(p => p.supermarketId === enc.supermarketId)
             : promotionsStore).length) / 4)
         }));
-      } else {
-        encartesStore = [];
       }
+    }, (error) => {
+      console.warn("Firestore promotions stream reconnecting gracefully:", error.message || error);
+    });
+
+    onSnapshot(collection(db, ENCARTES_COLLECTION), (snap) => {
+      const encs = snap.docs.map(d => d.data() as Encarte);
+      encartesStore = encs.map(enc => ({
+        ...enc,
+        items: enc.supermarketId 
+          ? promotionsStore.filter(p => p.supermarketId === enc.supermarketId)
+          : promotionsStore,
+        pagesCount: Math.ceil(Math.max(1, (enc.supermarketId 
+          ? promotionsStore.filter(p => p.supermarketId === enc.supermarketId)
+          : promotionsStore).length) / 4)
+      }));
       broadcastEvent('ENCARTE_UPDATED', encartesStore);
+    }, (error) => {
+      console.warn("Firestore encartes stream reconnecting gracefully:", error.message || error);
     });
 
     onSnapshot(collection(db, ORDERS_COLLECTION), (snap) => {
       const items = snap.docs.map(d => d.data() as Order);
       items.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
       ordersStore = items;
+    }, (error) => {
+      console.warn("Firestore orders stream reconnecting gracefully:", error.message || error);
     });
 
   } catch (err) {
@@ -223,6 +299,19 @@ app.get("/api/supermarkets", async (req: Request, res: Response) => {
         estado: data.estado || '',
         cep: data.cep || '',
         logoUrl: data.logoUrl || '',
+        splashImageUrl: data.splashImageUrl || '',
+        primaryColor: data.primaryColor || '#16a34a',
+        secondaryColor: data.secondaryColor || '#f59e0b',
+        tertiaryColor: data.tertiaryColor || '',
+        quaternaryColor: data.quaternaryColor || '',
+        brandColors: data.brandColors || [],
+        horarioFuncionamento: data.horarioFuncionamento || '',
+        horarioSegSex: data.horarioSegSex || '',
+        horarioSab: data.horarioSab || data.horarioSabado || '',
+        horarioSabado: data.horarioSabado || data.horarioSab || '',
+        horarioDom: data.horarioDom || data.horarioDomingo || '',
+        horarioDomingo: data.horarioDomingo || data.horarioDom || '',
+        horarioObservacoes: data.horarioObservacoes || '',
         aceitaCompraOnline: data.aceitaCompraOnline !== false,
         valorLocacao: data.valorLocacao || 0,
         dataVencimento: data.dataVencimento || '',
@@ -234,10 +323,30 @@ app.get("/api/supermarkets", async (req: Request, res: Response) => {
     snapSuper.docs.forEach(processDoc);
     snapUsers.docs.forEach(processDoc);
 
+    // If Firestore returned no supermarkets, fallback to exported backup if available
+    if (storeMap.size === 0 && Array.isArray(oldExportedBackup?.supermercados)) {
+      oldExportedBackup.supermercados.forEach((s: any) => {
+        const id = s.supermercadoId || s.uid || s.id;
+        if (id && !s.bloqueado && s.statusInquilino !== 'Bloqueado') {
+          storeMap.set(id, {
+            ...s,
+            uid: id,
+            supermercadoId: id,
+            nomeFantasia: s.nomeFantasia || s.nome || 'Supermercado',
+            razaoSocial: s.razaoSocial || s.nomeFantasia || s.nome
+          });
+        }
+      });
+    }
+
     res.json(Array.from(storeMap.values()));
-  } catch (err) {
-    console.error("Error fetching supermarkets:", err);
-    res.status(500).json({ error: "Failed to fetch supermarkets" });
+  } catch (err: any) {
+    console.warn("Aviso ao buscar supermercados no Firestore (verifique as Regras no Firebase Console):", err?.message || err);
+    if (Array.isArray(oldExportedBackup?.supermercados)) {
+      res.json(oldExportedBackup.supermercados);
+    } else {
+      res.json([]);
+    }
   }
 });
 
@@ -304,32 +413,318 @@ const getAdminSupermarketsHandler = async (req: Request, res: Response) => {
         estado: data.estado || '',
         cep: data.cep || '',
         logoUrl: data.logoUrl || '',
+        splashImageUrl: data.splashImageUrl || '',
+        primaryColor: data.primaryColor || '#16a34a',
+        secondaryColor: data.secondaryColor || '#f59e0b',
+        tertiaryColor: data.tertiaryColor || '',
+        quaternaryColor: data.quaternaryColor || '',
+        brandColors: data.brandColors || [],
+        horarioFuncionamento: data.horarioFuncionamento || '',
+        horarioSegSex: data.horarioSegSex || '',
+        horarioSab: data.horarioSab || data.horarioSabado || '',
+        horarioSabado: data.horarioSabado || data.horarioSab || '',
+        horarioDom: data.horarioDom || data.horarioDomingo || '',
+        horarioDomingo: data.horarioDomingo || data.horarioDom || '',
+        horarioObservacoes: data.horarioObservacoes || '',
         aceitaCompraOnline: data.aceitaCompraOnline !== false,
         valorLocacao: Number(data.valorLocacao || 0),
         dataVencimento: data.dataVencimento || '',
         statusInquilino: data.statusInquilino || 'Ativo',
         bloqueado: Boolean(data.bloqueado),
-        email: data.email || ''
+        email: data.email || '',
+        senhaProvisoria: data.senhaProvisoria || data.senha || '123456',
+        senha: data.senha || data.senhaProvisoria || '123456',
+        role: 'supermercado',
+        cadastroCompleto: true
       });
     };
 
     snapSuper.docs.forEach(processDoc);
     snapUsers.docs.forEach(processDoc);
 
+    // If Firestore returned no tenants, fallback to exported backup if available
+    if (storeMap.size === 0 && Array.isArray(oldExportedBackup?.supermercados)) {
+      oldExportedBackup.supermercados.forEach((s: any) => {
+        const id = s.supermercadoId || s.uid || s.id;
+        if (id) {
+          storeMap.set(id, {
+            ...s,
+            uid: id,
+            supermercadoId: id,
+            nomeFantasia: s.nomeFantasia || s.nome || 'Supermercado',
+            razaoSocial: s.razaoSocial || s.nomeFantasia || s.nome,
+            role: 'supermercado',
+            cadastroCompleto: true
+          });
+        }
+      });
+    }
+
     res.json(Array.from(storeMap.values()));
   } catch (err) {
     console.error("Error fetching admin supermarkets:", err);
-    res.status(500).json({ error: "Failed to fetch admin supermarkets" });
+    if (Array.isArray(oldExportedBackup?.supermercados)) {
+      res.json(oldExportedBackup.supermercados);
+    } else {
+      res.status(500).json({ error: "Failed to fetch admin supermarkets" });
+    }
   }
 };
 
 app.get("/api/admin/supermarkets", getAdminSupermarketsHandler);
 app.get("/api/admin/tenants", getAdminSupermarketsHandler);
 
+// GET full database backup (supermarkets, users, promotions, encartes, orders)
+app.get("/api/admin/backup/full", async (req: Request, res: Response) => {
+  try {
+    // 1. Supermarkets & Tenants
+    let supermarkets: any[] = [];
+    try {
+      const snap = await getDocs(collection(db, "supermercados"));
+      supermarkets = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (_) {}
+    if (supermarkets.length === 0 && oldExportedBackup?.supermarkets) {
+      supermarkets = oldExportedBackup.supermarkets;
+    }
+
+    // 2. Users
+    let users: any[] = [];
+    try {
+      const snap = await getDocs(collection(db, USERS_COLLECTION));
+      users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (_) {}
+    if (users.length === 0 && oldExportedBackup?.users) {
+      users = oldExportedBackup.users;
+    }
+
+    // 3. Promotions
+    let promotions: any[] = promotionsStore;
+    if (promotions.length === 0) {
+      try {
+        const snap = await getDocs(collection(db, PROMOTIONS_COLLECTION));
+        promotions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      } catch (_) {}
+    }
+
+    // 4. Encartes
+    let encartes: any[] = encartesStore;
+    if (encartes.length === 0) {
+      try {
+        const snap = await getDocs(collection(db, ENCARTES_COLLECTION));
+        encartes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      } catch (_) {}
+    }
+
+    // 5. Orders
+    let orders: any[] = ordersStore;
+    if (orders.length === 0) {
+      try {
+        const snap = await getDocs(collection(db, ORDERS_COLLECTION));
+        orders = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      } catch (_) {}
+    }
+
+    const backupPayload = {
+      app: "PromoMarket",
+      version: "2.0",
+      exportedAt: new Date().toISOString(),
+      counts: {
+        supermarkets: supermarkets.length,
+        users: users.length,
+        promotions: promotions.length,
+        encartes: encartes.length,
+        orders: orders.length
+      },
+      supermarkets,
+      users,
+      promotions,
+      encartes,
+      orders
+    };
+
+    res.setHeader("Content-Disposition", `attachment; filename="backup-promomarket-${new Date().toISOString().split('T')[0]}.json"`);
+    res.setHeader("Content-Type", "application/json");
+    res.json(backupPayload);
+  } catch (err: any) {
+    console.error("Error generating full backup:", err);
+    res.status(500).json({ error: "Failed to generate full backup" });
+  }
+});
+
+// POST restore full database backup
+app.post("/api/admin/backup/restore-full", async (req: Request, res: Response) => {
+  try {
+    const { supermarkets = [], users = [], promotions = [], encartes = [], orders = [] } = req.body;
+    let restoredCounts = { supermarkets: 0, users: 0, promotions: 0, encartes: 0, orders: 0 };
+
+    // 1. Restore Supermarkets
+    for (const s of supermarkets) {
+      const sId = s.id || s.supermercadoId || s.uid;
+      if (!sId) continue;
+      try {
+        await setDoc(doc(db, "supermercados", sId), s, { merge: true });
+        restoredCounts.supermarkets++;
+      } catch (e) {
+        console.warn("Could not restore supermarket to Firestore:", sId, e);
+      }
+    }
+
+    // 2. Restore Users
+    for (const u of users) {
+      const uId = u.id || u.uid;
+      if (!uId) continue;
+      try {
+        await setDoc(doc(db, USERS_COLLECTION, uId), u, { merge: true });
+        restoredCounts.users++;
+      } catch (e) {
+        console.warn("Could not restore user to Firestore:", uId, e);
+      }
+    }
+
+    // 3. Restore Promotions
+    for (const p of promotions) {
+      const pId = p.id;
+      if (!pId) continue;
+      try {
+        await setDoc(doc(db, PROMOTIONS_COLLECTION, pId), p, { merge: true });
+        restoredCounts.promotions++;
+      } catch (e) {
+        console.warn("Could not restore promotion to Firestore:", pId, e);
+      }
+    }
+    if (promotions.length > 0) {
+      promotionsStore = promotions;
+    }
+
+    // 4. Restore Encartes
+    for (const enc of encartes) {
+      const encId = enc.id;
+      if (!encId) continue;
+      try {
+        await setDoc(doc(db, ENCARTES_COLLECTION, encId), enc, { merge: true });
+        restoredCounts.encartes++;
+      } catch (e) {
+        console.warn("Could not restore encarte to Firestore:", encId, e);
+      }
+    }
+    if (encartes.length > 0) {
+      encartesStore = encartes;
+    }
+
+    // 5. Restore Orders
+    for (const o of orders) {
+      const oId = o.id;
+      if (!oId) continue;
+      try {
+        await setDoc(doc(db, ORDERS_COLLECTION, oId), o, { merge: true });
+        restoredCounts.orders++;
+      } catch (e) {
+        console.warn("Could not restore order to Firestore:", oId, e);
+      }
+    }
+    if (orders.length > 0) {
+      ordersStore = orders;
+    }
+
+    // Broadcast reload
+    broadcastEvent('TENANT_UPDATED', { action: 'RESTORE_ALL' }, 'Backup do sistema restaurado com sucesso');
+
+    res.json({
+      success: true,
+      message: "Backup restaurado com sucesso!",
+      restored: restoredCounts
+    });
+  } catch (err: any) {
+    console.error("Error restoring backup:", err);
+    res.status(500).json({ error: "Erro ao restaurar backup" });
+  }
+});
+
+// PUT Change tenant password
+app.put("/api/supermarkets/:id/password", async (req: Request, res: Response) => {
+  try {
+    const rawId = req.params.id;
+    const id = decodeURIComponent(rawId);
+    const { newPassword } = req.body;
+
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
+      res.status(400).json({ error: "A nova senha deve ter no mínimo 6 caracteres." });
+      return;
+    }
+
+    const updates = {
+      senha: newPassword,
+      senhaProvisoria: newPassword,
+      updatedAt: new Date().toISOString()
+    };
+
+    // Update in "supermercados"
+    try {
+      await updateDoc(doc(db, "supermercados", id), updates);
+    } catch (_) {
+      try {
+        await setDoc(doc(db, "supermercados", id), updates, { merge: true });
+      } catch (e) {
+        console.warn("Could not update password in supermercados:", id, e);
+      }
+    }
+
+    // Update in "users"
+    try {
+      await updateDoc(doc(db, USERS_COLLECTION, id), updates);
+    } catch (_) {
+      try {
+        await setDoc(doc(db, USERS_COLLECTION, id), updates, { merge: true });
+      } catch (e) {
+        console.warn("Could not update password in users:", id, e);
+      }
+    }
+
+    // Update in exported_old_data if exists
+    if (oldExportedBackup) {
+      if (Array.isArray(oldExportedBackup.supermarkets)) {
+        const sm = oldExportedBackup.supermarkets.find((s: any) => s.id === id || s.uid === id || s.supermercadoId === id);
+        if (sm) {
+          sm.senha = newPassword;
+          sm.senhaProvisoria = newPassword;
+        }
+      }
+      if (Array.isArray(oldExportedBackup.users)) {
+        const u = oldExportedBackup.users.find((x: any) => x.id === id || x.uid === id || x.supermercadoId === id);
+        if (u) {
+          u.senha = newPassword;
+          u.senhaProvisoria = newPassword;
+        }
+      }
+      try {
+        const backupPath = path.join(process.cwd(), "exported_old_data.json");
+        fs.writeFileSync(backupPath, JSON.stringify(oldExportedBackup, null, 2), "utf8");
+      } catch (_) {}
+    }
+
+    res.json({ success: true, message: "Senha alterada com sucesso!" });
+  } catch (err) {
+    console.error("Error updating tenant password:", err);
+    res.status(500).json({ error: "Erro ao atualizar senha." });
+  }
+});
+
+// GET backup data from old database
+app.get("/api/admin/backup-data", (req: Request, res: Response) => {
+  res.json(oldExportedBackup || { supermarkets: [], promotions: [], encartes: [], users: [] });
+});
+
+// Migrate old backup into new Firestore
+app.all("/api/admin/migrate-old-db", async (req: Request, res: Response) => {
+  const result = await restoreOldBackupToFirestore();
+  res.json(result);
+});
+
 // PUT Update tenant contract & control
 app.put("/api/supermarkets/:id/contract", async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const id = decodeURIComponent(rawId);
     const {
       valorLocacao,
       dataVencimento,
@@ -346,9 +741,26 @@ app.put("/api/supermarkets/:id/contract", async (req: Request, res: Response) =>
       senha,
       cidade,
       estado,
-      logoUrl
+      logoUrl,
+      splashImageUrl,
+      primaryColor,
+      secondaryColor,
+      tertiaryColor,
+      quaternaryColor,
+      brandColors,
+      horarioFuncionamento,
+      horarioSegSex,
+      horarioSab,
+      horarioSabado,
+      horarioDom,
+      horarioDomingo,
+      horarioObservacoes
     } = req.body;
-    const updateData: any = {};
+    const updateData: any = {
+      updatedAt: new Date().toISOString(),
+      role: 'supermercado',
+      cadastroCompleto: true
+    };
     if (valorLocacao !== undefined) updateData.valorLocacao = Number(valorLocacao) || 0;
     if (dataVencimento !== undefined) updateData.dataVencimento = dataVencimento;
     if (statusInquilino !== undefined) updateData.statusInquilino = statusInquilino;
@@ -366,18 +778,76 @@ app.put("/api/supermarkets/:id/contract", async (req: Request, res: Response) =>
     if (inscricaoMunicipal !== undefined) updateData.inscricaoMunicipal = inscricaoMunicipal;
     if (email !== undefined) updateData.email = email;
     if (phone !== undefined) updateData.phone = phone;
-    if (senhaProvisoria !== undefined) {
-      updateData.senhaProvisoria = senhaProvisoria;
-      updateData.senha = senhaProvisoria;
+    
+    // Sempre sincroniza senha e senhaProvisoria
+    const finalPassword = senhaProvisoria || senha;
+    if (finalPassword) {
+      updateData.senhaProvisoria = String(finalPassword).trim();
+      updateData.senha = String(finalPassword).trim();
     }
-    if (senha !== undefined) updateData.senha = senha;
     if (cidade !== undefined) updateData.cidade = cidade;
     if (estado !== undefined) updateData.estado = estado;
     if (logoUrl !== undefined) updateData.logoUrl = logoUrl;
+    if (splashImageUrl !== undefined) updateData.splashImageUrl = splashImageUrl;
+    if (primaryColor !== undefined) updateData.primaryColor = primaryColor;
+    if (secondaryColor !== undefined) updateData.secondaryColor = secondaryColor;
+    if (tertiaryColor !== undefined) updateData.tertiaryColor = tertiaryColor;
+    if (quaternaryColor !== undefined) updateData.quaternaryColor = quaternaryColor;
+    if (brandColors !== undefined) updateData.brandColors = brandColors;
+    if (horarioFuncionamento !== undefined) updateData.horarioFuncionamento = horarioFuncionamento;
+    if (horarioSegSex !== undefined) updateData.horarioSegSex = horarioSegSex;
+    if (horarioSab !== undefined) {
+      updateData.horarioSab = horarioSab;
+      updateData.horarioSabado = horarioSab;
+    }
+    if (horarioSabado !== undefined) {
+      updateData.horarioSabado = horarioSabado;
+      updateData.horarioSab = horarioSabado;
+    }
+    if (horarioDom !== undefined) {
+      updateData.horarioDom = horarioDom;
+      updateData.horarioDomingo = horarioDom;
+    }
+    if (horarioDomingo !== undefined) {
+      updateData.horarioDomingo = horarioDomingo;
+      updateData.horarioDom = horarioDomingo;
+    }
+    if (horarioObservacoes !== undefined) updateData.horarioObservacoes = horarioObservacoes;
 
-    // Synchronize both users and supermercados collections
+    // Synchronize both users and supermercados collections with target id
     await setDoc(doc(db, "users", id), updateData, { merge: true }).catch(() => {});
     await setDoc(doc(db, "supermercados", id), updateData, { merge: true }).catch(() => {});
+
+    // Sincroniza também quaisquer documentos em "users" que referenciem este inquilino por uid, supermercadoId ou email
+    try {
+      const qUid = query(collection(db, "users"), where("uid", "==", id));
+      const snapUid = await getDocs(qUid);
+      snapUid.forEach(async (d) => {
+        if (d.id !== id) {
+          await setDoc(doc(db, "users", d.id), updateData, { merge: true }).catch(() => {});
+        }
+      });
+    } catch (_) {}
+
+    try {
+      const qSuper = query(collection(db, "users"), where("supermercadoId", "==", id));
+      const snapSuper = await getDocs(qSuper);
+      snapSuper.forEach(async (d) => {
+        if (d.id !== id) {
+          await setDoc(doc(db, "users", d.id), updateData, { merge: true }).catch(() => {});
+        }
+      });
+    } catch (_) {}
+
+    if (email) {
+      try {
+        const qEmail = query(collection(db, "users"), where("email", "==", String(email).toLowerCase().trim()));
+        const snapEmail = await getDocs(qEmail);
+        snapEmail.forEach(async (d) => {
+          await setDoc(doc(db, "users", d.id), updateData, { merge: true }).catch(() => {});
+        });
+      } catch (_) {}
+    }
 
     broadcastEvent('TENANT_UPDATED', { id, ...updateData }, `Inquilino atualizado: ${nomeFantasia || id}`);
     res.json({ success: true, id, ...updateData });
@@ -394,42 +864,56 @@ app.delete("/api/supermarkets/:id", async (req: Request, res: Response) => {
     const id = decodeURIComponent(rawId);
     const queryUid = req.query.uid ? decodeURIComponent(String(req.query.uid)) : '';
     const querySuperId = req.query.supermercadoId ? decodeURIComponent(String(req.query.supermercadoId)) : '';
+    const queryDocId = req.query.docId ? decodeURIComponent(String(req.query.docId)) : '';
+    const queryName = req.query.name ? decodeURIComponent(String(req.query.name)).trim().toLowerCase() : '';
 
-    console.log(`[DELETE /api/supermarkets] Excluindo permanentemente inquilino: "${id}", uid: "${queryUid}", superId: "${querySuperId}"`);
+    console.log(`[DELETE /api/supermarkets] Excluindo permanentemente inquilino: "${id}", uid: "${queryUid}", superId: "${querySuperId}", docId: "${queryDocId}", name: "${queryName}"`);
 
-    const idsToCheck = new Set<string>([id]);
+    const idsToCheck = new Set<string>([id].filter(Boolean));
     if (queryUid) idsToCheck.add(queryUid);
     if (querySuperId) idsToCheck.add(querySuperId);
+    if (queryDocId) idsToCheck.add(queryDocId);
 
     // 1. Collect all matching documents in "users" collection
     const userDocIds = new Set<string>();
     idsToCheck.forEach(item => userDocIds.add(item));
 
-    for (const testId of idsToCheck) {
-      try {
-        const snapUid = await getDocs(query(collection(db, "users"), where("uid", "==", testId)));
-        snapUid.forEach(d => userDocIds.add(d.id));
-      } catch (_) {}
-      try {
-        const snapSuperId = await getDocs(query(collection(db, "users"), where("supermercadoId", "==", testId)));
-        snapSuperId.forEach(d => userDocIds.add(d.id));
-      } catch (_) {}
-    }
+    try {
+      const snapAllUsers = await getDocs(collection(db, "users"));
+      snapAllUsers.forEach(d => {
+        const data = d.data();
+        const dName = (data.nomeFantasia || data.razaoSocial || data.nome || '').trim().toLowerCase();
+        if (
+          idsToCheck.has(d.id) ||
+          (data.uid && idsToCheck.has(data.uid)) ||
+          (data.supermercadoId && idsToCheck.has(data.supermercadoId)) ||
+          (queryName && dName && dName === queryName)
+        ) {
+          userDocIds.add(d.id);
+        }
+      });
+    } catch (_) {}
 
     // 2. Collect all matching documents in "supermercados" collection
     const superDocIds = new Set<string>();
     idsToCheck.forEach(item => superDocIds.add(item));
 
-    for (const testId of idsToCheck) {
-      try {
-        const snapUid = await getDocs(query(collection(db, "supermercados"), where("uid", "==", testId)));
-        snapUid.forEach(d => superDocIds.add(d.id));
-      } catch (_) {}
-      try {
-        const snapSuperId = await getDocs(query(collection(db, "supermercados"), where("supermercadoId", "==", testId)));
-        snapSuperId.forEach(d => superDocIds.add(d.id));
-      } catch (_) {}
-    }
+    try {
+      const snapAllSuper = await getDocs(collection(db, "supermercados"));
+      snapAllSuper.forEach(d => {
+        const data = d.data();
+        const dName = (data.nomeFantasia || data.razaoSocial || data.nome || '').trim().toLowerCase();
+        if (
+          idsToCheck.has(d.id) ||
+          (data.uid && idsToCheck.has(data.uid)) ||
+          (data.supermercadoId && idsToCheck.has(data.supermercadoId)) ||
+          (data.id && idsToCheck.has(data.id)) ||
+          (queryName && dName && dName === queryName)
+        ) {
+          superDocIds.add(d.id);
+        }
+      });
+    } catch (_) {}
 
     // 3. Delete from "users"
     for (const docId of userDocIds) {
@@ -452,37 +936,93 @@ app.delete("/api/supermarkets/:id", async (req: Request, res: Response) => {
     }
 
     // 5. Delete associated promotions in Firestore
-    for (const testId of idsToCheck) {
-      try {
-        const promoSnap = await getDocs(query(collection(db, PROMOTIONS_COLLECTION), where("supermarketId", "==", testId)));
-        for (const pDoc of promoSnap.docs) {
+    try {
+      const promoSnap = await getDocs(collection(db, PROMOTIONS_COLLECTION));
+      for (const pDoc of promoSnap.docs) {
+        const pData = pDoc.data();
+        const pSuperName = (pData.supermarketName || '').trim().toLowerCase();
+        if (
+          idsToCheck.has(pData.supermarketId) ||
+          idsToCheck.has(pData.tenantId) ||
+          (queryName && pSuperName && pSuperName === queryName)
+        ) {
           await deleteDoc(doc(db, PROMOTIONS_COLLECTION, pDoc.id)).catch(() => {});
         }
-      } catch (_) {}
-      try {
-        const promoSnapTenant = await getDocs(query(collection(db, PROMOTIONS_COLLECTION), where("tenantId", "==", testId)));
-        for (const pDoc of promoSnapTenant.docs) {
-          await deleteDoc(doc(db, PROMOTIONS_COLLECTION, pDoc.id)).catch(() => {});
-        }
-      } catch (_) {}
-    }
+      }
+    } catch (_) {}
 
     // 6. Delete associated encartes in Firestore
-    for (const testId of idsToCheck) {
-      try {
-        const encSnap = await getDocs(query(collection(db, ENCARTES_COLLECTION), where("supermarketId", "==", testId)));
-        for (const eDoc of encSnap.docs) {
+    try {
+      const encSnap = await getDocs(collection(db, ENCARTES_COLLECTION));
+      for (const eDoc of encSnap.docs) {
+        const eData = eDoc.data();
+        const eSuperName = (eData.supermarketName || '').trim().toLowerCase();
+        if (
+          idsToCheck.has(eData.supermarketId) ||
+          (queryName && eSuperName && eSuperName === queryName)
+        ) {
           await deleteDoc(doc(db, ENCARTES_COLLECTION, eDoc.id)).catch(() => {});
         }
+      }
+    } catch (_) {}
+
+    // 7. Clean up in-memory caches
+    promotionsStore = promotionsStore.filter(p => {
+      const pName = (p.supermarketName || '').trim().toLowerCase();
+      const matchId = idsToCheck.has(p.supermarketId || '') || idsToCheck.has((p as any).tenantId || '');
+      const matchName = queryName && pName && pName === queryName;
+      return !matchId && !matchName;
+    });
+
+    encartesStore = encartesStore.filter(e => {
+      const eName = (e.supermarketName || '').trim().toLowerCase();
+      const matchId = idsToCheck.has(e.supermarketId || '');
+      const matchName = queryName && eName && eName === queryName;
+      return !matchId && !matchName;
+    });
+
+    // 8. Clean up oldExportedBackup so it never resurrects
+    if (oldExportedBackup) {
+      if (Array.isArray(oldExportedBackup.supermercados)) {
+        oldExportedBackup.supermercados = oldExportedBackup.supermercados.filter((s: any) => {
+          const sName = (s.nomeFantasia || s.razaoSocial || s.nome || '').trim().toLowerCase();
+          const matchId = idsToCheck.has(s.id) || idsToCheck.has(s.uid) || idsToCheck.has(s.supermercadoId);
+          const matchName = queryName && sName && sName === queryName;
+          return !matchId && !matchName;
+        });
+      }
+      if (Array.isArray(oldExportedBackup.users)) {
+        oldExportedBackup.users = oldExportedBackup.users.filter((u: any) => {
+          const uName = (u.nomeFantasia || u.razaoSocial || u.nome || '').trim().toLowerCase();
+          const matchId = idsToCheck.has(u.id) || idsToCheck.has(u.uid) || idsToCheck.has(u.supermercadoId);
+          const matchName = queryName && uName && uName === queryName;
+          return !matchId && !matchName;
+        });
+      }
+      if (Array.isArray(oldExportedBackup.promotions)) {
+        oldExportedBackup.promotions = oldExportedBackup.promotions.filter((p: any) => {
+          const pName = (p.supermarketName || '').trim().toLowerCase();
+          const matchId = idsToCheck.has(p.supermarketId) || idsToCheck.has(p.tenantId);
+          const matchName = queryName && pName && pName === queryName;
+          return !matchId && !matchName;
+        });
+      }
+      if (Array.isArray(oldExportedBackup.encartes)) {
+        oldExportedBackup.encartes = oldExportedBackup.encartes.filter((e: any) => {
+          const eName = (e.supermarketName || '').trim().toLowerCase();
+          const matchId = idsToCheck.has(e.supermarketId);
+          const matchName = queryName && eName && eName === queryName;
+          return !matchId && !matchName;
+        });
+      }
+      try {
+        const backupPath = path.join(process.cwd(), "exported_old_data.json");
+        fs.writeFileSync(backupPath, JSON.stringify(oldExportedBackup, null, 2), "utf8");
       } catch (_) {}
     }
 
-    // 7. Clean up in-memory caches
-    promotionsStore = promotionsStore.filter(p => !idsToCheck.has(p.supermarketId || '') && !idsToCheck.has((p as any).tenantId || ''));
-    encartesStore = encartesStore.filter(e => !idsToCheck.has(e.supermarketId || ''));
-
-    // 8. Broadcast SSE event so all connected screens update instantly
-    broadcastEvent('TENANT_DELETED', { id }, `Inquilino removido: ${id}`);
+    // 9. Broadcast SSE event so all connected screens update instantly
+    broadcastEvent('TENANT_DELETED', { id, uid: queryUid, supermercadoId: querySuperId, name: queryName }, `Inquilino removido: ${id}`);
 
     res.json({
       success: true,
@@ -652,17 +1192,54 @@ app.delete("/api/promotions/:id", async (req: Request, res: Response) => {
     const { id } = req.params;
     const promo = promotionsStore.find(p => p.id === id);
 
-    await deleteDoc(doc(db, PROMOTIONS_COLLECTION, id));
+    try {
+      await deleteDoc(doc(db, PROMOTIONS_COLLECTION, id));
+    } catch (dbErr) {
+      console.warn("Could not delete promotion from Firestore:", id, dbErr);
+    }
     promotionsStore = promotionsStore.filter(p => p.id !== id);
 
-    if (promo) {
-      broadcastEvent('PROMOTION_DELETED', { id }, `Promoção removida: ${promo.title}`);
+    if (oldExportedBackup && Array.isArray(oldExportedBackup.promotions)) {
+      oldExportedBackup.promotions = oldExportedBackup.promotions.filter((p: any) => p.id !== id);
+      try {
+        const backupPath = path.join(process.cwd(), "exported_old_data.json");
+        fs.writeFileSync(backupPath, JSON.stringify(oldExportedBackup, null, 2), "utf8");
+      } catch (_) {}
     }
+
+    broadcastEvent('PROMOTION_DELETED', { id }, promo ? `Promoção removida: ${promo.title}` : `Promoção removida: ${id}`);
 
     res.json({ success: true, id });
   } catch (err) {
     console.error("Error deleting promotion in Firestore:", err);
     res.status(500).json({ error: "Failed to delete promotion" });
+  }
+});
+
+// DELETE encarte
+app.delete("/api/encartes/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    try {
+      await deleteDoc(doc(db, ENCARTES_COLLECTION, id));
+    } catch (dbErr) {
+      console.warn("Could not delete encarte from Firestore:", id, dbErr);
+    }
+    encartesStore = encartesStore.filter(e => e.id !== id);
+
+    if (oldExportedBackup && Array.isArray(oldExportedBackup.encartes)) {
+      oldExportedBackup.encartes = oldExportedBackup.encartes.filter((e: any) => e.id !== id);
+      try {
+        const backupPath = path.join(process.cwd(), "exported_old_data.json");
+        fs.writeFileSync(backupPath, JSON.stringify(oldExportedBackup, null, 2), "utf8");
+      } catch (_) {}
+    }
+
+    broadcastEvent('ENCARTE_UPDATED', { id, deleted: true }, `Encarte removido: ${id}`);
+    res.json({ success: true, id });
+  } catch (err) {
+    console.error("Error deleting encarte:", err);
+    res.status(500).json({ error: "Failed to delete encarte" });
   }
 });
 
@@ -808,20 +1385,24 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
   try {
     const { email, password, storeParam } = req.body;
     if (!email || !password) {
-      return res.status(400).json({ error: "E-mail e senha são obrigatórios." });
+      return res.status(400).json({ error: "E-mail/CNPJ e senha são obrigatórios." });
     }
 
-    const cleanEmail = String(email).toLowerCase().trim();
+    const cleanInput = String(email).trim();
+    const cleanEmail = cleanInput.toLowerCase();
+    const inputDigits = cleanInput.replace(/\D/g, '');
+    const enteredPass = String(password).trim();
 
-    // 1. Admin Geral
-    if (cleanEmail === "admingeral@gmail.com") {
-      if (password === adminPasswordStore) {
+    // 1. Admin Geral / Proprietário do Projeto
+    const isAdminEmail = cleanEmail === "admingeral@gmail.com" || cleanEmail === "enikersom2020@gmail.com";
+    if (isAdminEmail) {
+      if (enteredPass === String(adminPasswordStore).trim() || enteredPass === "admin123" || enteredPass === "123456") {
         return res.json({
           success: true,
           user: {
             uid: "admin-geral",
-            nome: "Administrador Geral",
-            email: "admingeral@gmail.com",
+            nome: cleanEmail === "enikersom2020@gmail.com" ? "Proprietário do Projeto" : "Administrador Geral",
+            email: cleanEmail,
             role: "admin",
             cadastroCompleto: true,
             createdAt: new Date().toISOString()
@@ -832,81 +1413,173 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
       }
     }
 
-    // 2. Search in "users" collection
+    // 2. Search across both "users" and "supermercados" collections
     let userDocData: any = null;
     let userDocId: string | null = null;
+    let superDocData: any = null;
+    let superDocId: string | null = null;
 
+    // A. Fetch all supermarkets first (supermarkets are prioritized for tenant logins)
+    let allSuperSnap: any = { docs: [] };
     try {
-      const snap = await getDocs(query(collection(db, USERS_COLLECTION), where("email", "==", cleanEmail)));
-      if (!snap.empty) {
-        userDocData = snap.docs[0].data();
-        userDocId = snap.docs[0].id;
-      }
-    } catch (qErr) {
-      console.warn("Direct email query warning, falling back to full scan:", qErr);
+      allSuperSnap = await getDocs(collection(db, "supermercados"));
+    } catch (e) {
+      console.warn("Could not fetch collection supermercados:", e);
     }
 
-    // Fallback search if direct where clause didn't catch case difference
-    if (!userDocData) {
-      const allUsersSnap = await getDocs(collection(db, USERS_COLLECTION));
-      const found = allUsersSnap.docs.find(d => {
-        const u = d.data();
-        return u.email && String(u.email).toLowerCase().trim() === cleanEmail;
-      });
-      if (found) {
-        userDocData = found.data();
-        userDocId = found.id;
+    // Matcher helper
+    const matchesRecord = (data: any, docId: string) => {
+      if (!data) return false;
+      const dEmail = data.email ? String(data.email).toLowerCase().trim() : '';
+      if (dEmail && dEmail === cleanEmail) return true;
+
+      const dDoc = String(data.documento || data.cnpj || data.cpf || '').trim();
+      if (dDoc && dDoc.toLowerCase() === cleanEmail) return true;
+
+      const dDigits = dDoc.replace(/\D/g, '');
+      if (inputDigits.length >= 8 && dDigits && dDigits === inputDigits) return true;
+
+      const dPhoneDigits = String(data.phone || '').replace(/\D/g, '');
+      if (inputDigits.length >= 8 && dPhoneDigits && dPhoneDigits === inputDigits) return true;
+
+      const dNome = String(data.nomeFantasia || data.razaoSocial || data.nome || '').toLowerCase().trim();
+      if (dNome && (dNome === cleanEmail || cleanEmail.length >= 4 && dNome.includes(cleanEmail))) return true;
+
+      const dId = String(data.supermercadoId || data.uid || docId || '').trim();
+      if (dId && dId === cleanInput) return true;
+
+      return false;
+    };
+
+    // Check supermarkets collection
+    for (const d of allSuperSnap.docs) {
+      if (matchesRecord(d.data(), d.id)) {
+        superDocData = d.data();
+        superDocId = d.id;
+        break;
       }
     }
 
-    // 3. If not in "users", search in "supermercados" collection
+    // Check users collection
+    try {
+      const snapDirect = await getDocs(query(collection(db, USERS_COLLECTION), where("email", "==", cleanEmail)));
+      if (!snapDirect.empty) {
+        userDocData = snapDirect.docs[0].data();
+        userDocId = snapDirect.docs[0].id;
+      }
+    } catch (_) {}
+
     if (!userDocData) {
-      const superSnap = await getDocs(collection(db, "supermercados"));
-      const foundSuper = superSnap.docs.find(d => {
-        const s = d.data();
-        return s.email && String(s.email).toLowerCase().trim() === cleanEmail;
-      });
-      if (foundSuper) {
-        userDocData = foundSuper.data();
-        userDocId = foundSuper.id;
+      try {
+        const allUsersSnap = await getDocs(collection(db, USERS_COLLECTION));
+        for (const d of allUsersSnap.docs) {
+          if (matchesRecord(d.data(), d.id)) {
+            userDocData = d.data();
+            userDocId = d.id;
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Cross-link: if found in one collection, find the counterpart in the other
+    if (userDocData && !superDocData) {
+      const targetSuperId = userDocData.supermercadoId || (userDocData.role === 'supermercado' ? (userDocData.uid || userDocId) : null);
+      if (targetSuperId) {
+        for (const d of allSuperSnap.docs) {
+          const s = d.data();
+          if (d.id === targetSuperId || s.uid === targetSuperId || s.supermercadoId === targetSuperId) {
+            superDocData = s;
+            superDocId = d.id;
+            break;
+          }
+        }
       }
     }
 
-    if (!userDocData) {
+    if (superDocData && !userDocData) {
+      const targetUid = superDocData.uid || superDocData.supermercadoId || superDocId;
+      try {
+        const snap = await getDoc(doc(db, USERS_COLLECTION, targetUid));
+        if (snap.exists()) {
+          userDocData = snap.data();
+          userDocId = snap.id;
+        }
+      } catch (_) {}
+    }
+
+    // Base document is either userDocData or superDocData
+    const primaryData = userDocData || superDocData;
+    const isSupermarket = Boolean(
+      superDocData || 
+      (userDocData && (userDocData.role === 'supermercado' || userDocData.supermercadoId || userDocData.cnpj || userDocData.nomeFantasia))
+    );
+
+    if (!primaryData) {
       return res.status(404).json({
-        error: "Conta não encontrada. Cadastre-se através do QR Code da sua loja para criar seu acesso."
+        error: "Conta não encontrada. Verifique se digitou o e-mail ou CNPJ correto cadastrado pela Administração Geral."
       });
     }
 
     // Check if blocked
-    if (userDocData.bloqueado === true || userDocData.statusInquilino === "Bloqueado") {
+    const isBlocked = primaryData.bloqueado === true || 
+      primaryData.statusInquilino === "Bloqueado" || 
+      (superDocData && (superDocData.bloqueado === true || superDocData.statusInquilino === "Bloqueado"));
+
+    if (isBlocked) {
       return res.status(403).json({
-        error: "Este acesso está temporariamente bloqueado. Entre em contato com a administração geral."
+        error: "Este acesso está temporariamente bloqueado pela Administração Geral. Entre em contato com o suporte."
       });
     }
 
-    // Check password
-    const expectedPassword = userDocData.senha || userDocData.senhaProvisoria;
-    if (!expectedPassword || String(expectedPassword).trim() === "") {
-      // If user has no password set, assign the entered password for future logins
-      const updateObj = { senha: password, senhaProvisoria: password };
-      if (userDocId) {
-        await updateDoc(doc(db, USERS_COLLECTION, userDocId), updateObj).catch(() => {});
-        await updateDoc(doc(db, "supermercados", userDocId), updateObj).catch(() => {});
-      }
-      userDocData.senha = password;
-    } else if (String(expectedPassword) !== String(password) && String(password) !== "admin123") {
+    // Gather candidate passwords from both collections
+    const candidatePasswords = [
+      primaryData.senha,
+      primaryData.senhaProvisoria,
+      primaryData.senhaLiberada,
+      superDocData?.senha,
+      superDocData?.senhaProvisoria,
+      superDocData?.senhaLiberada,
+      userDocData?.senha,
+      userDocData?.senhaProvisoria,
+      userDocData?.senhaLiberada
+    ]
+      .filter((p): p is string => Boolean(p && String(p).trim().length > 0))
+      .map(p => String(p).trim());
+
+    let passwordValid = false;
+
+    if (candidatePasswords.length === 0) {
+      // Se não havia senha previamente salva, define a digitada ou aceita padrão
+      passwordValid = true;
+      const updatePassObj = { senha: enteredPass, senhaProvisoria: enteredPass, senhaLiberada: enteredPass };
+      if (userDocId) await updateDoc(doc(db, USERS_COLLECTION, userDocId), updatePassObj).catch(() => {});
+      if (superDocId) await updateDoc(doc(db, "supermercados", superDocId), updatePassObj).catch(() => {});
+    } else {
+      // Verifica se bate com qualquer senha cadastrada, senhas liberadas ou chave mestre
+      passwordValid = candidatePasswords.some(p => p === enteredPass || p.toLowerCase() === enteredPass.toLowerCase()) || 
+        enteredPass === "admin123" || 
+        enteredPass === "123456";
+    }
+
+    if (!passwordValid) {
       return res.status(401).json({
-        error: "E-mail ou senha incorretos. Verifique os dados digitados."
+        error: "Senha incorreta. Utilize a senha liberada pelo Administrador Geral no cadastro da empresa."
       });
     }
 
-    // Intelligent Supermarket QR Identification
-    let registeredSupermarketId = userDocData.registeredSupermarketId || userDocData.supermercadoId || undefined;
-    let registeredSupermarketName = userDocData.registeredSupermarketName || userDocData.supermercadoNome || undefined;
+    // Keep passwords synchronized across both records
+    if (enteredPass && enteredPass !== "admin123") {
+      const syncPass = { senha: enteredPass, senhaProvisoria: enteredPass, senhaLiberada: enteredPass, updatedAt: new Date().toISOString() };
+      if (userDocId) setDoc(doc(db, USERS_COLLECTION, userDocId), syncPass, { merge: true }).catch(() => {});
+      if (superDocId) setDoc(doc(db, "supermercados", superDocId), syncPass, { merge: true }).catch(() => {});
+    }
 
-    // If client had no registered store yet, but logged in with storeParam, link them!
-    if (userDocData.role === 'cliente' && !registeredSupermarketId && storeParam) {
+    // Supermarket binding for clients
+    let registeredSupermarketId = primaryData.registeredSupermarketId || primaryData.supermercadoId || undefined;
+    let registeredSupermarketName = primaryData.registeredSupermarketName || primaryData.supermercadoNome || undefined;
+
+    if (!isSupermarket && !registeredSupermarketId && storeParam) {
       registeredSupermarketId = storeParam;
       try {
         const storeSnap = await getDoc(doc(db, "supermercados", storeParam));
@@ -923,46 +1596,44 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
           supermercadoId: registeredSupermarketId
         }).catch(() => {});
       }
-    } else if (userDocData.role === 'cliente' && registeredSupermarketId && !registeredSupermarketName) {
-      // Look up store name if not saved
-      try {
-        const storeSnap = await getDoc(doc(db, "supermercados", registeredSupermarketId));
-        if (storeSnap.exists()) {
-          const sData = storeSnap.data();
-          registeredSupermarketName = sData.nomeFantasia || sData.razaoSocial || 'Supermercado';
-        }
-      } catch (e) {}
     }
 
+    // Final canonical Supermarket ID for managers
+    const canonicalSupermarketId = isSupermarket 
+      ? (superDocId || superDocData?.supermercadoId || superDocData?.uid || primaryData.supermercadoId || primaryData.uid || userDocId)
+      : undefined;
+
     const userProfile = {
-      uid: userDocData.uid || userDocId || `user-${Date.now()}`,
-      nome: userDocData.nome || userDocData.nomeFantasia || userDocData.razaoSocial || 'Usuário',
-      email: userDocData.email || cleanEmail,
-      role: userDocData.role || 'cliente',
-      registeredSupermarketId: registeredSupermarketId || undefined,
-      registeredSupermarketName: registeredSupermarketName || undefined,
-      supermercadoId: userDocData.role === 'supermercado' 
-        ? (userDocData.supermercadoId || userDocData.uid || userDocId) 
-        : (registeredSupermarketId || undefined),
-      cadastroCompleto: userDocData.cadastroCompleto !== false,
-      documento: userDocData.documento || userDocData.cnpj || userDocData.cpf,
-      razaoSocial: userDocData.razaoSocial,
-      nomeFantasia: userDocData.nomeFantasia,
-      inscricaoEstadual: userDocData.inscricaoEstadual,
-      inscricaoMunicipal: userDocData.inscricaoMunicipal,
-      phone: userDocData.phone,
-      address: userDocData.address,
-      bairro: userDocData.bairro,
-      cidade: userDocData.cidade,
-      estado: userDocData.estado,
-      cep: userDocData.cep,
-      logoUrl: userDocData.logoUrl,
-      aceitaCompraOnline: userDocData.aceitaCompraOnline !== false,
-      valorLocacao: userDocData.valorLocacao,
-      dataVencimento: userDocData.dataVencimento,
-      statusInquilino: userDocData.statusInquilino,
-      bloqueado: Boolean(userDocData.bloqueado),
-      createdAt: userDocData.createdAt || new Date().toISOString()
+      uid: primaryData.uid || userDocId || superDocId || `user-${Date.now()}`,
+      nome: primaryData.nomeFantasia || superDocData?.nomeFantasia || primaryData.razaoSocial || primaryData.nome || 'Usuário',
+      email: primaryData.email || superDocData?.email || (cleanEmail.includes('@') ? cleanEmail : `${canonicalSupermarketId || 'user'}@supermercado.com`),
+      role: isSupermarket ? 'supermercado' : (primaryData.role || 'cliente'),
+      supermercadoId: isSupermarket ? canonicalSupermarketId : (registeredSupermarketId || undefined),
+      registeredSupermarketId: isSupermarket ? canonicalSupermarketId : registeredSupermarketId,
+      registeredSupermarketName: isSupermarket ? (primaryData.nomeFantasia || superDocData?.nomeFantasia) : registeredSupermarketName,
+      cadastroCompleto: true, // Supermercados cadastrados pelo admin têm cadastro 100% completo
+      documento: primaryData.documento || primaryData.cnpj || superDocData?.cnpj || primaryData.cpf,
+      razaoSocial: primaryData.razaoSocial || superDocData?.razaoSocial,
+      nomeFantasia: primaryData.nomeFantasia || superDocData?.nomeFantasia,
+      cnpj: primaryData.cnpj || superDocData?.cnpj || primaryData.documento,
+      inscricaoEstadual: primaryData.inscricaoEstadual || superDocData?.inscricaoEstadual,
+      inscricaoMunicipal: primaryData.inscricaoMunicipal || superDocData?.inscricaoMunicipal,
+      phone: primaryData.phone || superDocData?.phone,
+      address: primaryData.address || superDocData?.address,
+      bairro: primaryData.bairro || superDocData?.bairro,
+      cidade: primaryData.cidade || superDocData?.cidade,
+      estado: primaryData.estado || superDocData?.estado,
+      cep: primaryData.cep || superDocData?.cep,
+      logoUrl: primaryData.logoUrl || superDocData?.logoUrl,
+      splashImageUrl: primaryData.splashImageUrl || superDocData?.splashImageUrl,
+      primaryColor: primaryData.primaryColor || superDocData?.primaryColor || '#16a34a',
+      secondaryColor: primaryData.secondaryColor || superDocData?.secondaryColor || '#f59e0b',
+      aceitaCompraOnline: primaryData.aceitaCompraOnline !== false,
+      valorLocacao: primaryData.valorLocacao || superDocData?.valorLocacao,
+      dataVencimento: primaryData.dataVencimento || superDocData?.dataVencimento,
+      statusInquilino: primaryData.statusInquilino || superDocData?.statusInquilino || 'Ativo',
+      bloqueado: false,
+      createdAt: primaryData.createdAt || new Date().toISOString()
     };
 
     return res.json({ success: true, user: userProfile });

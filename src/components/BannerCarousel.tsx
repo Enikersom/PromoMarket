@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { PromotionItem, SupermarketDetails } from '../types';
 import { extractDirectImageUrl, getCategoryFallbackImage } from '../utils/image';
+import { findSupermarketMatch } from '../utils/supermarket';
 
 interface BannerCarouselProps {
   banners: PromotionItem[];
@@ -95,15 +96,23 @@ export const BannerCarousel: React.FC<BannerCarouselProps> = ({
   // Resolved list of isolated banners for the current view
   const activeBanners = useMemo(() => {
     if (selectedSupermarketId !== 'all') {
+      const matchStore = findSupermarketMatch(validSupermarkets, selectedSupermarketId);
       // Strictly isolated to the chosen supermarket
-      return uniqueBanners.filter((b) => b.supermarketId === selectedSupermarketId);
+      return uniqueBanners.filter((b) => {
+        if (b.supermarketId === selectedSupermarketId) return true;
+        if (matchStore) {
+          if (b.supermarketId === matchStore.uid || b.supermarketId === matchStore.supermercadoId) return true;
+          if (b.supermarketName && matchStore.nomeFantasia && b.supermarketName.toLowerCase().trim() === matchStore.nomeFantasia.toLowerCase().trim()) return true;
+        }
+        return false;
+      });
     }
     // In 'all' mode: show the isolated banners of the active store tab
     if (activeTabStoreId && bannersByStore.has(activeTabStoreId)) {
       return bannersByStore.get(activeTabStoreId) || [];
     }
     return [];
-  }, [selectedSupermarketId, uniqueBanners, activeTabStoreId, bannersByStore]);
+  }, [selectedSupermarketId, uniqueBanners, activeTabStoreId, bannersByStore, validSupermarkets]);
 
   // Reset slide index when active banners change
   useEffect(() => {

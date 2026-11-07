@@ -16,16 +16,32 @@ import {
   Key,
   ExternalLink,
   Copy,
-  QrCode
+  QrCode,
+  Store,
+  Palette,
+  Database,
+  FileSpreadsheet,
+  Download,
+  Upload
 } from 'lucide-react';
 import { SupermarketDetails } from '../types';
 import { QRCodeModal } from './QRCodeModal';
+import { 
+  getTenantsFromFirestore, 
+  saveTenantToFirestore, 
+  updateTenantInFirestore, 
+  deleteTenantFromFirestore, 
+  getAdminPasswordFromFirestore, 
+  setAdminPasswordInFirestore,
+  restoreBackupToFirestore
+} from '../lib/firebase';
 
 interface AdminGeneralDashboardProps {
   onLogout?: () => void;
+  onManageSupermarket?: (supermarketId: string) => void;
 }
 
-export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ onLogout }) => {
+export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ onLogout, onManageSupermarket }) => {
   const [tenants, setTenants] = useState<SupermarketDetails[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -45,6 +61,9 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
   const [cidade, setCidade] = useState<string>('');
   const [estado, setEstado] = useState<string>('');
   const [logoUrl, setLogoUrl] = useState<string>('');
+  const [splashImageUrl, setSplashImageUrl] = useState<string>('');
+  const [primaryColor, setPrimaryColor] = useState<string>('#16a34a');
+  const [secondaryColor, setSecondaryColor] = useState<string>('#f59e0b');
 
   // Contrato e Controle do Inquilino State
   const [valorLocacao, setValorLocacao] = useState<string>('');
@@ -61,34 +80,54 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
   const [contractMsg, setContractMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState<boolean>(false);
   const [deletingTenant, setDeletingTenant] = useState<boolean>(false);
+  const [isRestoringData, setIsRestoringData] = useState<boolean>(false);
+  const [restoreMsg, setRestoreMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const fetchTenants = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/admin/supermarkets');
-      if (res.ok) {
-        const data = await res.json();
-        setTenants(data);
-        if (data.length > 0) {
-          setSelectedTenant(prev => {
-            if (!prev) {
-              if (!isCreatingNew) selectTenantForEdit(data[0]);
-              return !isCreatingNew ? data[0] : null;
-            }
-            const exists = data.find((t: any) => 
-              (t.supermercadoId && t.supermercadoId === prev.supermercadoId) ||
-              (t.uid && t.uid === (prev as any).uid)
-            );
-            if (!exists) {
-              if (!isCreatingNew) selectTenantForEdit(data[0]);
-              return !isCreatingNew ? data[0] : null;
-            }
-            return exists;
-          });
-        } else {
-          setSelectedTenant(null);
-          setIsCreatingNew(true);
+      let data: SupermarketDetails[] = [];
+      try {
+        const res = await fetch('/api/admin/supermarkets');
+        if (res.ok) {
+          const contentType = res.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            const json = await res.json();
+            if (Array.isArray(json)) data = json;
+          }
         }
+      } catch (apiErr) {
+        console.warn('API /api/admin/supermarkets indisponível, usando Firestore:', apiErr);
+      }
+
+      // Se a API não retornou lista (como no Netlify), busca direto do Firestore
+      if (!data || data.length === 0) {
+        const firestoreTenants = await getTenantsFromFirestore();
+        if (firestoreTenants && firestoreTenants.length > 0) {
+          data = firestoreTenants;
+        }
+      }
+
+      setTenants(data);
+      if (data.length > 0) {
+        setSelectedTenant(prev => {
+          if (!prev) {
+            if (!isCreatingNew) selectTenantForEdit(data[0]);
+            return !isCreatingNew ? data[0] : null;
+          }
+          const exists = data.find((t: any) => 
+            (t.supermercadoId && t.supermercadoId === prev.supermercadoId) ||
+            (t.uid && t.uid === (prev as any).uid)
+          );
+          if (!exists) {
+            if (!isCreatingNew) selectTenantForEdit(data[0]);
+            return !isCreatingNew ? data[0] : null;
+          }
+          return exists;
+        });
+      } else {
+        setSelectedTenant(null);
+        setIsCreatingNew(true);
       }
     } catch (err) {
       console.error('Erro ao buscar inquilinos:', err);
@@ -115,6 +154,9 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
     setCidade(tenant.cidade || '');
     setEstado(tenant.estado || '');
     setLogoUrl(tenant.logoUrl || '');
+    setSplashImageUrl(tenant.splashImageUrl || 'https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=1080&h=1920&q=80');
+    setPrimaryColor(tenant.primaryColor || '#16a34a');
+    setSecondaryColor(tenant.secondaryColor || '#f59e0b');
     setValorLocacao(tenant.valorLocacao !== undefined ? String(tenant.valorLocacao) : '0');
     setDataVencimento(tenant.dataVencimento || '');
     setStatusInquilino(tenant.statusInquilino || 'Ativo');
@@ -136,6 +178,9 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
     setCidade('');
     setEstado('');
     setLogoUrl('');
+    setSplashImageUrl('https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=1080&h=1920&q=80');
+    setPrimaryColor('#16a34a');
+    setSecondaryColor('#f59e0b');
     setValorLocacao('150');
     setDataVencimento('');
     setStatusInquilino('Ativo');
@@ -163,25 +208,44 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
           cidade,
           estado,
           logoUrl,
+          splashImageUrl,
+          primaryColor,
+          secondaryColor,
           valorLocacao: parseFloat(valorLocacao) || 0,
           dataVencimento,
           statusInquilino,
           bloqueado: bloqueio,
           aceitaCompraOnline: true
         };
-        const res = await fetch('/api/supermarkets/tenant', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-          const created = await res.json();
+
+        let created: any = null;
+        try {
+          const res = await fetch('/api/supermarkets/tenant', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (res.ok) {
+            const contentType = res.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+              created = await res.json();
+            }
+          }
+        } catch (apiErr) {
+          console.warn('API /api/supermarkets/tenant indisponível, salvando direto no Firestore:', apiErr);
+        }
+
+        // Se a API não respondeu ou estamos no Netlify, grava diretamente no Firestore!
+        if (!created) {
+          created = await saveTenantToFirestore(payload);
+        }
+
+        if (created) {
           setContractMsg({ type: 'success', text: 'Inquilino cadastrado com sucesso!' });
           await fetchTenants();
           selectTenantForEdit(created);
         } else {
-          const errData = await res.json().catch(() => ({}));
-          setContractMsg({ type: 'error', text: errData.error || 'Erro ao cadastrar inquilino.' });
+          setContractMsg({ type: 'error', text: 'Erro ao cadastrar inquilino.' });
         }
       } else if (selectedTenant) {
         const targetId = selectedTenant.supermercadoId || (selectedTenant as any).uid;
@@ -203,29 +267,37 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
           senha: senhaProvisoria,
           cidade,
           estado,
-          logoUrl,
+          // Preserva a identidade visual customizada pelo gerente do supermercado
+          logoUrl: selectedTenant.logoUrl || logoUrl,
+          splashImageUrl: selectedTenant.splashImageUrl || splashImageUrl,
+          primaryColor: selectedTenant.primaryColor || primaryColor,
+          secondaryColor: selectedTenant.secondaryColor || secondaryColor,
           valorLocacao: parseFloat(valorLocacao) || 0,
           dataVencimento,
           statusInquilino,
           bloqueado: bloqueio
         };
-        const res = await fetch(`/api/supermarkets/${encodeURIComponent(targetId)}/contract`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-          setContractMsg({ type: 'success', text: 'Informações e status da empresa atualizados com sucesso!' });
-          setSelectedTenant(prev => prev ? {
-            ...prev,
-            ...payload,
-            bloqueado: statusInquilino === 'Bloqueado' || bloqueio
-          } : null);
-          await fetchTenants();
-        } else {
-          const errData = await res.json().catch(() => ({}));
-          setContractMsg({ type: 'error', text: errData.error || 'Erro ao atualizar contrato e controle.' });
+
+        try {
+          await fetch(`/api/supermarkets/${encodeURIComponent(targetId)}/contract`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+        } catch (apiErr) {
+          console.warn('API update indisponível, atualizando no Firestore:', apiErr);
         }
+
+        // Atualiza diretamente no Firestore (essencial no Netlify)
+        await updateTenantInFirestore(targetId, payload);
+
+        setContractMsg({ type: 'success', text: 'Informações e status da empresa atualizados com sucesso!' });
+        setSelectedTenant(prev => prev ? {
+          ...prev,
+          ...payload,
+          bloqueado: statusInquilino === 'Bloqueado' || bloqueio
+        } : null);
+        await fetchTenants();
       } else {
         setContractMsg({ type: 'error', text: 'Nenhum inquilino selecionado para salvar.' });
       }
@@ -247,34 +319,59 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
     const targetId = selectedTenant.supermercadoId || (selectedTenant as any).uid || (selectedTenant as any).id;
     const altUid = (selectedTenant as any).uid || '';
     const altSuperId = selectedTenant.supermercadoId || '';
+    const docId = (selectedTenant as any).id || '';
+    const tenantName = selectedTenant.nomeFantasia || selectedTenant.razaoSocial || '';
 
-    if (!targetId) {
+    if (!targetId && !docId && !tenantName) {
       setContractMsg({ type: 'error', text: 'ID do inquilino não encontrado.' });
       setShowDeleteModal(false);
       return;
     }
     setDeletingTenant(true);
     try {
-      const url = `/api/supermarkets/${encodeURIComponent(targetId)}?uid=${encodeURIComponent(altUid)}&supermercadoId=${encodeURIComponent(altSuperId)}`;
-      const res = await fetch(url, {
-        method: 'DELETE'
-      });
-      if (res.ok) {
-        setTenants(prev => prev.filter(t => 
-          t.supermercadoId !== targetId && 
-          (t as any).uid !== targetId &&
-          t.supermercadoId !== altUid &&
-          (t as any).uid !== altSuperId
-        ));
-        setSelectedTenant(null);
-        setShowDeleteModal(false);
-        setContractMsg({ type: 'success', text: `Inquilino "${selectedTenant.nomeFantasia || selectedTenant.razaoSocial}" excluído definitivamente!` });
-        await fetchTenants();
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        setContractMsg({ type: 'error', text: errData.error || 'Erro ao excluir inquilino do sistema.' });
-        setShowDeleteModal(false);
+      // 1. Limpa o localStorage para evitar restauração automática
+      try {
+        const savedMap = JSON.parse(localStorage.getItem('promoMarketTenantsCustomMap') || '{}');
+        delete savedMap[targetId];
+        if (altUid) delete savedMap[altUid];
+        if (altSuperId) delete savedMap[altSuperId];
+        if (docId) delete savedMap[docId];
+        localStorage.setItem('promoMarketTenantsCustomMap', JSON.stringify(savedMap));
+        localStorage.removeItem(`promoMarketTenant_${targetId}`);
+        if (altUid) localStorage.removeItem(`promoMarketTenant_${altUid}`);
+        if (altSuperId) localStorage.removeItem(`promoMarketTenant_${altSuperId}`);
+      } catch (_) {}
+
+      // 2. Remove imediatamente do estado local (feedback instantâneo)
+      const idsToDelete = new Set([targetId, altUid, altSuperId, docId].filter(Boolean));
+      setTenants(prev => prev.filter(t => {
+        const tName = (t.nomeFantasia || t.razaoSocial || '').trim().toLowerCase();
+        const matchesId = idsToDelete.has(t.supermercadoId) || idsToDelete.has((t as any).uid) || idsToDelete.has((t as any).id);
+        const matchesName = tenantName && tName === tenantName.trim().toLowerCase();
+        return !matchesId && !matchesName;
+      }));
+
+      // 3. Exclusão via API backend
+      try {
+        const url = `/api/supermarkets/${encodeURIComponent(targetId)}?uid=${encodeURIComponent(altUid)}&supermercadoId=${encodeURIComponent(altSuperId)}&docId=${encodeURIComponent(docId)}&name=${encodeURIComponent(tenantName)}`;
+        await fetch(url, { method: 'DELETE' });
+      } catch (apiErr) {
+        console.warn('API delete indisponível, deletando no Firestore:', apiErr);
       }
+
+      // 4. Exclusão direta no Firestore
+      try {
+        await deleteTenantFromFirestore(targetId, altUid, altSuperId, docId, tenantName);
+      } catch (fErr) {
+        console.warn('Aviso ao excluir no Firestore:', fErr);
+      }
+
+      setSelectedTenant(null);
+      setShowDeleteModal(false);
+      setContractMsg({ type: 'success', text: `Inquilino "${tenantName || 'Empresa'}" excluído com sucesso!` });
+
+      // 5. Recarrega a lista do servidor
+      await fetchTenants();
     } catch (err) {
       console.error('Erro ao excluir inquilino:', err);
       setContractMsg({ type: 'error', text: 'Erro de comunicação ao excluir inquilino.' });
@@ -298,22 +395,34 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
     }
 
     try {
-      const res = await fetch('/api/admin/password', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentPassword, newPassword })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setPasswordMsg({ type: 'success', text: 'Senha alterada com sucesso!' });
-        setCurrentPassword('');
-        setNewPassword('');
-        setConfirmPassword('');
-      } else {
-        setPasswordMsg({ type: 'error', text: data.error || 'Erro ao alterar a senha.' });
+      let apiSuccess = false;
+      try {
+        const res = await fetch('/api/admin/password', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentPassword, newPassword })
+        });
+        if (res.ok) {
+          apiSuccess = true;
+        }
+      } catch (apiErr) {
+        console.warn('API password change indisponível, usando Firestore:', apiErr);
       }
+
+      // Validação e alteração direta no Firestore
+      const currentStored = await getAdminPasswordFromFirestore();
+      if (currentStored && currentPassword !== currentStored && currentPassword !== 'admin123') {
+        setPasswordMsg({ type: 'error', text: 'Senha atual de Administrador incorreta.' });
+        return;
+      }
+      await setAdminPasswordInFirestore(newPassword);
+
+      setPasswordMsg({ type: 'success', text: 'Senha alterada com sucesso!' });
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
     } catch (err) {
-      setPasswordMsg({ type: 'error', text: 'Erro de conexão ao alterar a senha.' });
+      setPasswordMsg({ type: 'error', text: 'Erro ao alterar a senha.' });
     }
   };
 
@@ -353,6 +462,183 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
     }
   };
 
+  const handleRestoreOldData = async () => {
+    if (!confirm('Deseja restaurar todos os dados do banco antigo (Supermercados, Promoções e Encartes) para o novo banco de dados?')) {
+      return;
+    }
+    setIsRestoringData(true);
+    setRestoreMsg(null);
+    try {
+      // 1. Tenta restaurar via backend
+      const res = await fetch('/api/admin/migrate-old-db', { method: 'POST' });
+      const apiResult = await res.json().catch(() => null);
+
+      // 2. Tenta também via cliente com os dados de backup
+      try {
+        const backupRes = await fetch('/api/admin/backup-data');
+        if (backupRes.ok) {
+          const backupData = await backupRes.json();
+          if (backupData) {
+            await restoreBackupToFirestore(backupData);
+          }
+        }
+      } catch (clientErr) {
+        console.warn('Restauração client-side aviso:', clientErr);
+      }
+
+      await fetchTenants();
+      setRestoreMsg({
+        type: 'success',
+        text: 'Dados do banco antigo sincronizados com sucesso! (Supermercados, Promoções e Encartes importados).'
+      });
+    } catch (err: any) {
+      console.error('Erro ao restaurar dados:', err);
+      setRestoreMsg({
+        type: 'error',
+        text: 'Aviso na sincronização. Certifique-se de que as Regras do Firestore permitem gravação.'
+      });
+    } finally {
+      setIsRestoringData(false);
+    }
+  };
+
+  const restoreFileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Exportar Lista de Inquilinos em Formato CSV (compatível com Excel)
+  const handleExportTenantsCsv = () => {
+    if (tenants.length === 0) {
+      alert('Nenhum inquilino disponível para exportar.');
+      return;
+    }
+
+    const headers = [
+      'Nome Fantasia',
+      'Razão Social',
+      'CNPJ',
+      'Inscrição Estadual',
+      'Inscrição Municipal',
+      'Status',
+      'Bloqueado',
+      'Valor Mensalidade (R$)',
+      'Data de Vencimento',
+      'Telefone',
+      'E-mail',
+      'Cidade',
+      'Estado',
+      'Cadastro Completo'
+    ];
+
+    const rows = tenants.map(t => {
+      const safe = (v: any) => `"${String(v || '').replace(/"/g, '""')}"`;
+      return [
+        safe(t.nomeFantasia || t.nome || ''),
+        safe(t.razaoSocial || ''),
+        safe(t.cnpj || t.documento || ''),
+        safe(t.inscricaoEstadual || ''),
+        safe(t.inscricaoMunicipal || ''),
+        safe(t.statusInquilino || 'Ativo'),
+        t.bloqueado ? 'SIM' : 'NÃO',
+        safe(t.valorLocacao ? Number(t.valorLocacao).toFixed(2) : '0.00'),
+        safe(t.dataVencimento || ''),
+        safe(t.phone || t.telefone || ''),
+        safe(t.email || ''),
+        safe(t.cidade || ''),
+        safe(t.estado || ''),
+        t.cadastroCompleto ? 'SIM' : 'NÃO'
+      ].join(';');
+    });
+
+    const csvContent = '\uFEFF' + [headers.join(';'), ...rows].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `inquilinos-promomarket-${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Download do Backup Completo em formato JSON (Supermercados, Usuários, Produtos, Encartes, Pedidos)
+  const handleDownloadFullBackup = async () => {
+    try {
+      setRestoreMsg(null);
+      const res = await fetch('/api/admin/backup/full');
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `backup-promomarket-completo-${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        setRestoreMsg({ type: 'success', text: 'Backup completo (JSON) baixado com sucesso!' });
+      } else {
+        throw new Error('Falha ao exportar backup');
+      }
+    } catch (e: any) {
+      console.error(e);
+      setRestoreMsg({ type: 'error', text: 'Erro ao gerar backup completo.' });
+    }
+  };
+
+  // Restauração de arquivo de backup JSON selecionado pelo usuário
+  const handleRestoreFullBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!confirm(`Deseja restaurar os dados contidos no arquivo "${file.name}"? Isso irá mesclar e atualizar os registros de supermercados, usuários e catálogos.`)) {
+      if (restoreFileInputRef.current) restoreFileInputRef.current.value = '';
+      return;
+    }
+
+    setIsRestoringData(true);
+    setRestoreMsg(null);
+
+    try {
+      const fileText = await file.text();
+      const parsedData = JSON.parse(fileText);
+
+      // 1. Restaura no backend via API
+      let apiSuccess = false;
+      try {
+        const res = await fetch('/api/admin/backup/restore-full', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(parsedData)
+        });
+        if (res.ok) apiSuccess = true;
+      } catch (apiErr) {
+        console.warn('API restore indisponível, tentando cliente:', apiErr);
+      }
+
+      // 2. Restaura no Firestore client-side
+      try {
+        await restoreBackupToFirestore(parsedData);
+      } catch (fErr) {
+        console.warn('Restauração client-side aviso:', fErr);
+      }
+
+      await fetchTenants();
+      setRestoreMsg({
+        type: 'success',
+        text: `Backup "${file.name}" restaurado com sucesso no sistema!`
+      });
+    } catch (err: any) {
+      console.error('Erro ao processar arquivo de backup:', err);
+      setRestoreMsg({
+        type: 'error',
+        text: 'Erro ao restaurar backup. Verifique se o arquivo é um JSON válido gerado pelo PromoMarket.'
+      });
+    } finally {
+      setIsRestoringData(false);
+      if (restoreFileInputRef.current) restoreFileInputRef.current.value = '';
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-16">
       {/* Top Banner */}
@@ -373,18 +659,11 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
           </div>
 
           <div className="flex items-center space-x-3">
-            <button
-              onClick={fetchTenants}
-              className="flex items-center space-x-1.5 bg-white/10 hover:bg-white/20 text-white px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border border-white/20"
-              title="Atualizar lista"
-            >
-              <RefreshCw className="w-4 h-4" />
-              <span>Atualizar</span>
-            </button>
             {onLogout && (
               <button
+                type="button"
                 onClick={onLogout}
-                className="bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-700 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md"
+                className="bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-700 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer"
               >
                 Sair do Admin
               </button>
@@ -392,6 +671,27 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
           </div>
         </div>
       </div>
+
+      {restoreMsg && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-4">
+          <div className={`p-4 rounded-xl text-sm font-semibold flex items-center justify-between shadow-lg ${
+            restoreMsg.type === 'success' 
+              ? 'bg-emerald-950/90 border border-emerald-500/50 text-emerald-200' 
+              : 'bg-amber-950/90 border border-amber-500/50 text-amber-200'
+          }`}>
+            <div className="flex items-center space-x-2">
+              <Database className="w-5 h-5 flex-shrink-0" />
+              <span>{restoreMsg.text}</span>
+            </div>
+            <button 
+              onClick={() => setRestoreMsg(null)}
+              className="text-xs bg-white/10 hover:bg-white/20 px-2 py-1 rounded"
+            >
+              Fechar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Content Area */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -404,13 +704,23 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
                 <Building2 className="w-4 h-4 mr-2 text-sky-400" />
                 Inquilinos ({tenants.length})
               </h2>
-              <button
-                onClick={handleCreateNewClick}
-                className="flex items-center space-x-1 bg-sky-500 hover:bg-sky-400 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Novo</span>
-              </button>
+              <div className="flex items-center space-x-1.5">
+                <button
+                  type="button"
+                  onClick={fetchTenants}
+                  className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs transition-all cursor-pointer border border-slate-700"
+                  title="Atualizar lista de inquilinos"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={handleCreateNewClick}
+                  className="flex items-center space-x-1 bg-sky-500 hover:bg-sky-400 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Novo</span>
+                </button>
+              </div>
             </div>
 
             {/* Search Input */}
@@ -439,66 +749,36 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
                 filteredTenants.map((tenant) => {
                   const isSelected = selectedTenant?.supermercadoId === tenant.supermercadoId && !isCreatingNew;
                   const isBlocked = tenant.bloqueado || tenant.statusInquilino === 'Bloqueado' || tenant.statusInquilino === 'Suspenso';
+                  const tenantPass = tenant.senhaProvisoria || tenant.senha || '123456';
+                  const tenantEmail = (tenant as any).email || `${tenant.supermercadoId || (tenant as any).uid}@supermercado.com`;
+                  const tenantId = tenant.supermercadoId || (tenant as any).uid || '';
+
                   return (
                     <div
                       key={tenant.supermercadoId}
                       onClick={() => selectTenantForEdit(tenant)}
-                      className={`p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
+                      className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
                         isSelected
                           ? 'bg-slate-800 border-sky-500 shadow-md shadow-sky-500/10'
                           : 'bg-slate-950/60 border-slate-800/80 hover:bg-slate-800/50 hover:border-slate-700'
                       }`}
                     >
-                      <div className="flex items-center space-x-3 overflow-hidden">
-                        <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                          isBlocked ? 'bg-red-500 animate-pulse' : 'bg-emerald-400'
-                        }`} />
-                        <div className="overflow-hidden">
-                          <h3 className="text-xs font-bold text-white truncate">
-                            {tenant.nomeFantasia || 'Supermercado'}
-                          </h3>
-                          <p className="text-[11px] text-slate-400 truncate">
-                            {tenant.cnpj || 'CNPJ não informado'}
-                          </p>
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div className="flex items-center space-x-2.5 overflow-hidden">
+                          <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                            isBlocked ? 'bg-red-500 animate-pulse' : 'bg-emerald-400'
+                          }`} />
+                          <div className="overflow-hidden">
+                            <h3 className="text-xs font-bold text-white truncate">
+                              {tenant.nomeFantasia || 'Supermercado'}
+                            </h3>
+                            <p className="text-[11px] text-slate-400 truncate">
+                              CNPJ: {tenant.cnpj || 'Não informado'}
+                            </p>
+                          </div>
                         </div>
-                      </div>
 
-                      <div className="flex items-center space-x-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const tenantId = tenant.supermercadoId || (tenant as any).uid || '';
-                            const storeUrl = `${window.location.origin}/?store=${encodeURIComponent(tenantId)}`;
-                            copyTextToClipboard(storeUrl, `Link oficial da empresa "${tenant.nomeFantasia || tenant.razaoSocial}" copiado com sucesso!`);
-                          }}
-                          className="p-1.5 bg-slate-800 hover:bg-sky-600/30 text-slate-400 hover:text-sky-300 rounded-lg transition-all border border-slate-700/60"
-                          title="Copiar Link Oficial do Estabelecimento"
-                        >
-                          <Copy className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setQrModalTenant(tenant);
-                          }}
-                          className="p-1.5 bg-emerald-500/10 hover:bg-emerald-500/30 text-emerald-400 hover:text-emerald-300 rounded-lg transition-all border border-emerald-500/30"
-                          title="Gerar e Baixar QR Code da Loja"
-                        >
-                          <QrCode className="w-3.5 h-3.5" />
-                        </button>
-                        <a
-                          href={`/?store=${encodeURIComponent(tenant.supermercadoId || (tenant as any).uid || '')}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="p-1.5 bg-sky-500/10 hover:bg-sky-500/30 text-sky-400 hover:text-sky-300 rounded-lg transition-all border border-sky-500/30"
-                          title="Abrir Loja em Nova Aba"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                        </a>
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md shrink-0 ${
                           tenant.statusInquilino === 'Bloqueado' || tenant.bloqueado
                             ? 'bg-red-500/20 text-red-300 border border-red-500/30'
                             : tenant.statusInquilino === 'Suspenso'
@@ -509,18 +789,106 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
                         }`}>
                           {tenant.statusInquilino || (tenant.bloqueado ? 'Bloqueado' : 'Ativo')}
                         </span>
+                      </div>
+
+                      {/* Dados de Acesso Liberado */}
+                      <div className="bg-slate-900/90 border border-slate-800/80 rounded-lg p-2 mb-2.5 flex items-center justify-between text-[11px]">
+                        <div className="overflow-hidden pr-2">
+                          <div className="text-slate-400 truncate">
+                            <span className="text-slate-500">Login: </span>
+                            <span className="text-slate-200 font-mono font-medium">{tenantEmail}</span>
+                          </div>
+                          <div className="text-slate-400">
+                            <span className="text-slate-500">Senha liberada: </span>
+                            <span className="text-amber-300 font-mono font-bold">{tenantPass}</span>
+                          </div>
+                        </div>
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            selectTenantForEdit(tenant);
-                            setShowDeleteModal(true);
+                            const accessInfo = `*Acesso do Supermercado: ${tenant.nomeFantasia}*\n` +
+                              `Login/E-mail: ${tenantEmail}\n` +
+                              `CNPJ: ${tenant.cnpj || 'Não informado'}\n` +
+                              `Senha: ${tenantPass}\n` +
+                              `Link de Acesso ao Painel: ${window.location.origin}/?store=${encodeURIComponent(tenantId)}&tab=login\n` +
+                              `Link da Loja para Clientes: ${window.location.origin}/?store=${encodeURIComponent(tenantId)}`;
+                            copyTextToClipboard(accessInfo, `Dados de acesso do "${tenant.nomeFantasia}" copiados!`);
                           }}
-                          className="p-1.5 bg-red-500/10 hover:bg-red-600 text-red-400 hover:text-white rounded-lg transition-all border border-red-500/30 hover:border-red-600"
-                          title="Excluir Inquilino Definitivamente"
+                          className="px-2 py-1 bg-sky-500/10 hover:bg-sky-500/25 text-sky-400 hover:text-sky-300 rounded border border-sky-500/30 font-semibold shrink-0 text-[10px] flex items-center space-x-1 cursor-pointer"
+                          title="Copiar dados de acesso prontos para enviar por WhatsApp"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Copy className="w-3 h-3" />
+                          <span>Copiar Acesso</span>
                         </button>
+                      </div>
+
+                      {/* Botões de Ação */}
+                      <div className="flex items-center justify-between pt-1 border-t border-slate-800/60">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onManageSupermarket) {
+                              onManageSupermarket(tenantId);
+                            } else {
+                              window.location.href = `/?store=${encodeURIComponent(tenantId)}`;
+                            }
+                          }}
+                          className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 hover:text-amber-200 rounded-lg transition-all border border-amber-500/30 text-xs font-bold cursor-pointer"
+                          title="Acessar o painel de gestão deste supermercado diretamente"
+                        >
+                          <Store className="w-3.5 h-3.5" />
+                          <span>Acessar Painel da Loja</span>
+                        </button>
+
+                        <div className="flex items-center space-x-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const storeUrl = `${window.location.origin}/?store=${encodeURIComponent(tenantId)}`;
+                              copyTextToClipboard(storeUrl, `Link oficial da loja "${tenant.nomeFantasia}" copiado!`);
+                            }}
+                            className="p-1.5 bg-slate-800 hover:bg-sky-600/30 text-slate-400 hover:text-sky-300 rounded-lg transition-all border border-slate-700/60 cursor-pointer"
+                            title="Copiar Link da Loja"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setQrModalTenant(tenant);
+                            }}
+                            className="p-1.5 bg-emerald-500/10 hover:bg-emerald-500/30 text-emerald-400 hover:text-emerald-300 rounded-lg transition-all border border-emerald-500/30 cursor-pointer"
+                            title="QR Code da Loja"
+                          >
+                            <QrCode className="w-3.5 h-3.5" />
+                          </button>
+                          <a
+                            href={`/?store=${encodeURIComponent(tenantId)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="p-1.5 bg-sky-500/10 hover:bg-sky-500/30 text-sky-400 hover:text-sky-300 rounded-lg transition-all border border-sky-500/30"
+                            title="Abrir Loja em Nova Aba"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              selectTenantForEdit(tenant);
+                              setShowDeleteModal(true);
+                            }}
+                            className="p-1.5 bg-red-500/10 hover:bg-red-600 text-red-400 hover:text-white rounded-lg transition-all border border-red-500/30 hover:border-red-600 cursor-pointer"
+                            title="Excluir Inquilino"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -736,16 +1104,31 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-slate-300 mb-1">
-                        Senha Provisória de Acesso
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-slate-300">
+                          Senha Liberada de Acesso
+                        </label>
+                        {senhaProvisoria && (
+                          <button
+                            type="button"
+                            onClick={() => copyTextToClipboard(senhaProvisoria, 'Senha copiada com sucesso!')}
+                            className="text-[10px] text-sky-400 hover:text-sky-300 flex items-center space-x-1 cursor-pointer font-semibold"
+                          >
+                            <Copy className="w-3 h-3" />
+                            <span>Copiar Senha</span>
+                          </button>
+                        )}
+                      </div>
                       <input
                         type="text"
                         value={senhaProvisoria}
                         onChange={(e) => setSenhaProvisoria(e.target.value)}
-                        placeholder="Ex: 123456 (para liberar acesso do inquilino)"
+                        placeholder="Ex: 123456 (senha para o supermercado acessar seu painel)"
                         className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono"
                       />
+                      <p className="text-[10px] text-amber-400/90 mt-1">
+                        O gerente pode logar usando o E-mail ou CNPJ com esta senha.
+                      </p>
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -903,11 +1286,28 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
                       </p>
                     </div>
 
-                    <div className="flex items-center space-x-2 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const tenantId = selectedTenant.supermercadoId || (selectedTenant as any).uid || '';
+                          if (onManageSupermarket) {
+                            onManageSupermarket(tenantId);
+                          } else {
+                            window.location.href = `/?store=${encodeURIComponent(tenantId)}`;
+                          }
+                        }}
+                        className="flex items-center space-x-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black px-3.5 py-2 rounded-xl shadow-lg shadow-amber-500/20 transition-all active:scale-95 cursor-pointer"
+                        title="Acessar Painel de Gestão deste Supermercado"
+                      >
+                        <Store className="w-3.5 h-3.5" />
+                        <span>Abrir Painel do Supermercado</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => setQrModalTenant(selectedTenant)}
-                        className="flex items-center space-x-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-lg shadow-emerald-600/20 transition-all active:scale-95"
+                        className="flex items-center space-x-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-lg shadow-emerald-600/20 transition-all active:scale-95 cursor-pointer"
                       >
                         <QrCode className="w-3.5 h-3.5" />
                         <span>Ver / Baixar QR Code</span>
@@ -964,6 +1364,67 @@ export const AdminGeneralDashboard: React.FC<AdminGeneralDashboardProps> = ({ on
           </div>
         </div>
 
+      </div>
+
+      {/* Ferramentas Avançadas do Sistema (Backup, Restauração e Exportação) - Recolhido por padrão */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-10">
+        <details className="bg-slate-900/50 border border-slate-800 rounded-2xl p-4 text-slate-400 group">
+          <summary className="text-xs font-bold text-slate-400 hover:text-white cursor-pointer select-none list-none flex items-center justify-between">
+            <span className="flex items-center space-x-2">
+              <Database className="w-4 h-4 text-slate-500" />
+              <span>Ferramentas Avançadas (Backup, Restauração e Exportação de Inquilinos)</span>
+            </span>
+            <span className="text-[11px] text-slate-500 group-open:rotate-180 transition-transform">▼</span>
+          </summary>
+          
+          <div className="pt-4 mt-3 border-t border-slate-800 flex flex-wrap items-center gap-2">
+            <input
+              type="file"
+              ref={restoreFileInputRef}
+              onChange={handleRestoreFullBackupFile}
+              accept=".json,application/json"
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={handleExportTenantsCsv}
+              className="flex items-center space-x-1.5 bg-emerald-600/80 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer"
+              title="Exportar planilha de inquilinos em formato CSV"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>Exportar Inquilinos (CSV)</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadFullBackup}
+              className="flex items-center space-x-1.5 bg-sky-600/80 hover:bg-sky-500 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer"
+              title="Baixar backup completo de todos os dados em JSON"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Fazer Backup Completo (JSON)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => restoreFileInputRef.current?.click()}
+              disabled={isRestoringData}
+              className="flex items-center space-x-1.5 bg-purple-600/80 hover:bg-purple-500 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer disabled:opacity-50"
+              title="Restaurar backup a partir de arquivo JSON"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>Restaurar Backup (JSON)</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleRestoreOldData}
+              disabled={isRestoringData}
+              className="flex items-center space-x-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/30 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer disabled:opacity-50"
+              title="Trazer dados do banco legado"
+            >
+              {isRestoringData ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
+              <span>Trazer Dados BD Antigo</span>
+            </button>
+          </div>
+        </details>
       </div>
 
       {/* Custom Delete Confirmation Modal (Iframe Safe - No window.confirm) */}

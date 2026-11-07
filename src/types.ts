@@ -29,11 +29,25 @@ export interface UserProfile {
   registeredSupermarketId?: string;
   registeredSupermarketName?: string;
   supermercadoId?: string;
+  splashImageUrl?: string;
+  primaryColor?: string;
+  secondaryColor?: string;
+  tertiaryColor?: string;
+  quaternaryColor?: string;
+  brandColors?: string[];
+  horarioFuncionamento?: string;
+  horarioSegSex?: string;
+  horarioSab?: string;
+  horarioSabado?: string;
+  horarioDom?: string;
+  horarioDomingo?: string;
+  horarioObservacoes?: string;
 }
 
 export interface SupermarketDetails {
   uid?: string;
   supermercadoId?: string;
+  email?: string;
   razaoSocial: string;
   nomeFantasia: string;
   cnpj: string;
@@ -46,6 +60,19 @@ export interface SupermarketDetails {
   estado?: string;
   cep?: string;
   logoUrl?: string;
+  splashImageUrl?: string; // 1080x1920 highlighted splash / login background image
+  primaryColor?: string; // Hex color (e.g. #16a34a, #dc2626, #2563eb)
+  secondaryColor?: string; // Hex color (e.g. #f59e0b, #facc15)
+  tertiaryColor?: string; // Hex color for borders, tags, accents (e.g. #3b82f6, #10b981)
+  quaternaryColor?: string; // Hex color for backgrounds, contrasts (e.g. #6366f1, #0f172a)
+  brandColors?: string[]; // Array of 4+ custom colors to match establishment logo
+  horarioFuncionamento?: string; // e.g. "Seg a Sex: 07:00 às 21:00 | Sáb: 07:00 às 20:00 | Dom: 08:00 às 13:00"
+  horarioSegSex?: string; // e.g. "07:00 às 21:30"
+  horarioSab?: string; // e.g. "07:00 às 20:00"
+  horarioSabado?: string;
+  horarioDom?: string; // e.g. "08:00 às 14:00" ou "Fechado"
+  horarioDomingo?: string;
+  horarioObservacoes?: string; // e.g. "Atendimento balcão e delivery"
   aceitaCompraOnline: boolean;
   valorLocacao?: number;
   dataVencimento?: string;

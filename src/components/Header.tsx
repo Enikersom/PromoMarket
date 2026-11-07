@@ -13,8 +13,9 @@ import {
   UserCheck,
   ShieldCheck
 } from 'lucide-react';
-import { UserProfile } from '../types';
+import { UserProfile, SupermarketDetails } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
+import { getStoreOperatingStatus } from '../utils/storeHours';
 
 interface HeaderProps {
   activeView: 'client' | 'manager' | 'split';
@@ -30,6 +31,7 @@ interface HeaderProps {
   isConnected: boolean;
   latestEventMessage?: string;
   currentUser?: UserProfile | null;
+  currentStore?: SupermarketDetails | null;
   onLogout?: () => void;
 }
 
@@ -47,8 +49,22 @@ export const Header: React.FC<HeaderProps> = ({
   isConnected,
   latestEventMessage,
   currentUser,
+  currentStore,
   onLogout
 }) => {
+  const storeStatus = getStoreOperatingStatus(currentStore);
+
+  // Paleta de 4+ cores do estabelecimento
+  const primaryColor = currentStore?.primaryColor;
+  const secondaryColor = currentStore?.secondaryColor;
+  const tertiaryColor = currentStore?.tertiaryColor;
+  const quaternaryColor = currentStore?.quaternaryColor;
+
+  // Gradiente dinâmico com 4 ou mais cores para acompanhar fielmente a logo do supermercado
+  const tickerGradientStyle = (primaryColor && secondaryColor) ? {
+    background: `linear-gradient(to right, ${primaryColor}, ${secondaryColor}${tertiaryColor ? `, ${tertiaryColor}` : ''}${quaternaryColor ? `, ${quaternaryColor}` : ''})`
+  } : undefined;
+
   return (
     <header className="sticky top-0 z-40 bg-slate-900 border-b border-slate-800 text-white shadow-xl">
       {/* Top User Bar / Authenticated User Status */}
@@ -100,7 +116,10 @@ export const Header: React.FC<HeaderProps> = ({
       )}
 
       {/* Top Banner Ticker */}
-      <div className="bg-gradient-to-r from-sky-600 via-blue-600 to-indigo-700 text-white text-xs py-1.5 px-4 font-medium flex items-center justify-between">
+      <div 
+        className="bg-gradient-to-r from-sky-600 via-blue-600 to-indigo-700 text-white text-xs py-1.5 px-4 font-medium flex items-center justify-between"
+        style={tickerGradientStyle}
+      >
         <div className="flex items-center space-x-2 overflow-hidden">
           <span className="flex items-center bg-red-500 text-white px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider animate-pulse">
             <Flame className="w-3 h-3 mr-1 inline" /> Ao Vivo
@@ -109,12 +128,22 @@ export const Header: React.FC<HeaderProps> = ({
             {latestEventMessage || 'Transmissão em tempo real ativada! Qualquer oferta atualizada pelo painel é refletida instantaneamente.'}
           </span>
         </div>
-        <div className="hidden md:flex items-center space-x-4 text-sky-100 text-[11px] shrink-0">
+        <div className="hidden md:flex items-center space-x-3 text-sky-100 text-[11px] shrink-0">
           <span className="flex items-center">
             <Radio className={`w-3 h-3 mr-1 ${isConnected ? 'text-emerald-400 animate-ping' : 'text-amber-400'}`} />
             {isConnected ? 'SSE Conectado' : 'Reconectando...'}
           </span>
-          <span>• Horário: 08:00 às 22:00</span>
+          <span className="flex items-center space-x-1.5 bg-slate-900/60 px-2 py-0.5 rounded-md border border-white/10">
+            <Clock className="w-3 h-3 text-sky-300" />
+            <span>{storeStatus.todaySchedule}</span>
+            <span className={`text-[9px] font-black px-1.5 py-0.2 rounded-full uppercase ${
+              storeStatus.isOpen 
+                ? 'bg-emerald-500 text-white' 
+                : 'bg-amber-500 text-slate-950'
+            }`}>
+              {storeStatus.isOpen ? 'Aberto' : 'Fechado'}
+            </span>
+          </span>
         </div>
       </div>
 
@@ -123,20 +152,40 @@ export const Header: React.FC<HeaderProps> = ({
         
         {/* Brand & Logo */}
         <div className="flex items-center space-x-2 sm:space-x-3">
-          <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl overflow-hidden shadow-lg shadow-sky-500/20 flex items-center justify-center shrink-0 border border-sky-400/30 bg-slate-950">
-            <img src="/pwa-192x192.png" alt="PromoMarket" className="w-full h-full object-cover" />
+          <div 
+            className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl overflow-hidden shadow-lg flex items-center justify-center shrink-0 border bg-slate-950 p-0.5"
+            style={{
+              borderColor: tertiaryColor || primaryColor || 'rgba(56, 189, 248, 0.3)',
+              boxShadow: primaryColor ? `0 4px 14px ${primaryColor}30` : undefined
+            }}
+          >
+            {currentStore?.logoUrl || currentStore?.splashImageUrl ? (
+              <img src={currentStore.logoUrl || currentStore.splashImageUrl} alt={currentStore.nomeFantasia || 'Supermercado'} className="w-full h-full object-contain" />
+            ) : (
+              <img src="/pwa-192x192.png" alt="PromoMarket" className="w-full h-full object-cover" />
+            )}
           </div>
           <div>
             <div className="flex items-center space-x-1.5 sm:space-x-2">
               <h1 className="text-lg sm:text-xl font-bold tracking-tight text-white font-sans">
-                Promo<span className="text-sky-400">Market</span>
+                {currentStore?.nomeFantasia ? (
+                  <span className="text-white truncate max-w-[180px] sm:max-w-[240px] inline-block align-bottom">{currentStore.nomeFantasia}</span>
+                ) : (
+                  <>Promo<span className="text-sky-400">Market</span></>
+                )}
               </h1>
-              <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-full font-semibold uppercase">
-                Realtime
+              <span className={`text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-full font-semibold uppercase ${
+                storeStatus.isOpen
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+              }`}>
+                {storeStatus.isOpen ? 'Aberto Agora' : 'Fechado'}
               </span>
             </div>
-            <p className="text-xs text-slate-400 hidden sm:block">
-              Supermercado & Ofertas Dinâmicas em Tempo Real
+            <p className="text-xs text-slate-400 flex items-center gap-1.5">
+              <Clock className="w-3 h-3 text-emerald-400 shrink-0" />
+              <span className="truncate max-w-[200px] sm:hidden">{storeStatus.todaySchedule}</span>
+              <span className="truncate max-w-md hidden sm:inline">{storeStatus.fullSchedule}</span>
             </p>
           </div>
         </div>

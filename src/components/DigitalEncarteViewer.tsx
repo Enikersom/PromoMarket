@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { findSupermarketMatch } from '../utils/supermarket';
 import { 
   Search, 
   BookOpen, 
@@ -23,11 +24,13 @@ import {
   ChevronDown,
   X,
   Info,
-  QrCode
+  QrCode,
+  Clock
 } from 'lucide-react';
 import { PromotionItem, Category, Encarte, SupermarketDetails } from '../types';
 import { extractDirectImageUrl, getCategoryFallbackImage } from '../utils/image';
 import { QRCodeModal } from './QRCodeModal';
+import { getStoreOperatingStatus } from '../utils/storeHours';
 
 interface DigitalEncarteViewerProps {
   promotions: PromotionItem[];
@@ -86,10 +89,8 @@ export const DigitalEncarteViewer: React.FC<DigitalEncarteViewerProps> = ({
 
   // Selected supermarket object
   const selectedSupermarket = useMemo(() => {
-    if (selectedSupermarketId === 'all') return null;
-    return (supermarkets || []).find(
-      (m) => m.uid === selectedSupermarketId || m.supermercadoId === selectedSupermarketId
-    );
+    if (!selectedSupermarketId || selectedSupermarketId === 'all') return null;
+    return findSupermarketMatch(supermarkets, selectedSupermarketId) || null;
   }, [selectedSupermarketId, supermarkets]);
 
   const categoriesList: { id: Category | 'all'; label: string; icon: string }[] = [
@@ -111,7 +112,8 @@ export const DigitalEncarteViewer: React.FC<DigitalEncarteViewerProps> = ({
           : (promo.supermarketId === selectedSupermarketId ||
              (selectedSupermarket && (
                promo.supermarketId === selectedSupermarket.uid ||
-               promo.supermarketId === selectedSupermarket.supermercadoId
+               promo.supermarketId === selectedSupermarket.supermercadoId ||
+               (promo.supermarketName && selectedSupermarket.nomeFantasia && promo.supermarketName.toLowerCase().trim() === selectedSupermarket.nomeFantasia.toLowerCase().trim())
              )));
       const matchesCategory = selectedCategory === 'all' || promo.category === selectedCategory;
       const matchesSearch =
@@ -315,6 +317,50 @@ export const DigitalEncarteViewer: React.FC<DigitalEncarteViewerProps> = ({
                     </p>
                   )}
                 </div>
+
+                {/* Operating Hours & Status (Horários de Funcionamento) */}
+                {(() => {
+                  const storeStatus = getStoreOperatingStatus(selectedSupermarket);
+                  return (
+                    <div className="mt-3.5 pt-3 border-t border-slate-800/80">
+                      <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+                        <div className="flex items-center space-x-1.5 text-xs font-bold text-slate-200">
+                          <Clock className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span>Horários de Atendimento</span>
+                        </div>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider flex items-center gap-1.5 ${
+                          storeStatus.isOpen
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        }`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${storeStatus.isOpen ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                          {storeStatus.isOpen ? 'Aberto Agora' : 'Fechado no Momento'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                        <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-2">
+                          <p className="text-[10px] uppercase font-bold text-slate-400">Segunda a Sexta</p>
+                          <p className="font-bold text-white mt-0.5 text-xs">{storeStatus.segSex}</p>
+                        </div>
+                        <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-2">
+                          <p className="text-[10px] uppercase font-bold text-slate-400">Sábado</p>
+                          <p className="font-bold text-white mt-0.5 text-xs">{storeStatus.sab}</p>
+                        </div>
+                        <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-2">
+                          <p className="text-[10px] uppercase font-bold text-slate-400">Domingo & Feriados</p>
+                          <p className="font-bold text-white mt-0.5 text-xs">{storeStatus.dom}</p>
+                        </div>
+                      </div>
+
+                      {storeStatus.obs && (
+                        <p className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-2.5 py-1 mt-2">
+                          <span className="font-bold">Observações:</span> {storeStatus.obs}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 

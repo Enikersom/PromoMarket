@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { CartItem, Order } from '../types';
 import { extractDirectImageUrl, getCategoryFallbackImage } from '../utils/image';
+import { saveOrderToFirestore } from '../lib/firebase';
 
 interface CartDrawerProps {
   isOpen: boolean;
@@ -77,14 +78,29 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
         totalSavings
       };
 
-      const res = await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(orderData)
-      });
+      let createdOrder: Order | null = null;
+      try {
+        const res = await fetch('/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(orderData)
+        });
+        if (res.ok) {
+          const contentType = res.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            createdOrder = await res.json();
+          }
+        }
+      } catch (apiErr) {
+        console.warn('API /api/orders indisponível, gravando direto no Firestore:', apiErr);
+      }
 
-      if (res.ok) {
-        const createdOrder: Order = await res.json();
+      // Se a API não respondeu (ex: Netlify), grava diretamente no Firestore!
+      if (!createdOrder) {
+        createdOrder = await saveOrderToFirestore(orderData as any);
+      }
+
+      if (createdOrder) {
         setOrderSuccess(createdOrder);
         onOrderPlaced(createdOrder);
         onClearCart();
@@ -93,6 +109,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       }
     } catch (err) {
       console.error('Error placing order:', err);
+      alert('Ocorreu um erro ao enviar o pedido. Tente novamente.');
     } finally {
       setIsSubmitting(false);
     }
